@@ -75,7 +75,6 @@ def main():
         draw_icon(size).save(os.path.join(OUT, "icon-%d.png" % size))
     draw_icon(512, maskable=True).save(os.path.join(OUT, "icon-maskable-512.png"))
     draw_icon(180).save(os.path.join(OUT, "apple-touch-icon.png"))
-    draw_icon(1024).save(os.path.join(OUT, "icon-1024.png"))
     print("wrote icons to", os.path.normpath(OUT))
 
 

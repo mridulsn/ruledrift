@@ -111,6 +111,19 @@ It is skippable, and replayable from the profile screen.
 A test asserts that step 4's board really does punish the old rule - if that
 invariant broke, the tutorial would quietly stop teaching anything.
 
+## Getting out of the player's way
+
+Every visit lands on **home**, including the first. An earlier build dropped new
+players straight into the tutorial, and being deposited somewhere you did not
+choose turns out to be its own kind of confusion - so onboarding is now offered
+rather than forced, as a "New here? Learn in 60 seconds" card that disappears
+once it is done.
+
+Home asks exactly one question. A single **Play** button leads to the modes;
+everything else - how to play, your report, achievements, the rule codex - sits
+below it. Account and settings live in the top right, because *"where do I log
+in"* should never be a question a player has to answer.
+
 ## Modes
 
 | Mode | What changes |
@@ -188,11 +201,13 @@ src/share.js     result codes, duel comparison
 src/charts.js    hand-rolled SVG charts (no chart library)
 src/tiles.js     tile rendering
 src/audio.js     WebAudio blips - no audio assets
-src/tutorial.js  the five scripted onboarding boards
+src/tutorial.js  the five scripted onboarding boards + guide examples
 src/achievements.js  ranks, XP, stepped achievements
 src/juice.js     particles, floating text, shake, haptics
+src/cloud.js     optional accounts and profile sync (no SDK)
+src/config.js    the two public Supabase values
 src/main.js      screens and the game loop
-tools/selftest.mjs   34 invariant tests
+tools/selftest.mjs   84 invariant tests
 tools/make_icons.py  icon generation
 ```
 
@@ -213,13 +228,14 @@ Both are enforced by the generator and covered by tests:
 ## Running it
 
 ```bash
-python -m http.server 8777      # any static server works
-node tools/selftest.mjs         # 34 invariant checks
-python tools/make_icons.py      # regenerate icons
+npm start                       # any static server works
+npm test                        # 84 invariant checks (no install needed)
+npm run icons                   # regenerate icons
 ```
 
-Deploys as static files anywhere. Ships as a PWA - installable, offline, no
-network calls of any kind.
+Deploys as static files anywhere. Ships as a PWA - installable and fully
+playable offline. Signed out it makes no network calls at all; signed in, the
+only requests are to your own Supabase project.
 
 ## Roadmap
 

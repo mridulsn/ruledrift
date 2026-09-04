@@ -1,0 +1,24 @@
+{
+  "name": "ruledrift",
+  "version": "1.0.0",
+  "description": "A brain game where the rule is never told to you, and silently changes once you learn it.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "homepage": "https://ruledrift.vercel.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mridulsn/ruledrift.git"
+  },
+  "keywords": ["game", "pwa", "offline", "cognitive", "wisconsin-card-sorting"],
+  "scripts": {
+    "test": "node tools/selftest.mjs",
+    "start": "python -m http.server 8777",
+    "icons": "python tools/make_icons.py",
+    "deploy": "vercel deploy --prod --yes"
+  },
+  "comment": "There are deliberately no dependencies and no build step. This file only exists to give the commands a home - `npm install` is not needed and does nothing.",
+  "engines": {
+    "node": ">=18"
+  }
+}

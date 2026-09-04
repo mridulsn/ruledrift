@@ -1,13 +1,22 @@
 # Turning on accounts (Google + Discord)
 
-The code is written and tested. What is left is account creation and OAuth app
-registration, which **you have to do yourself** — it needs your identity, your
-logins, and it issues secrets that should never pass through a chat window.
+## Current status
 
-Everything below is free. Total time: about 20 minutes.
+| Step | State |
+|---|---|
+| 1. Supabase project | ✅ done |
+| 2. `profiles` table + row-level security | ✅ done |
+| 3. URL + anon key in `src/config.js` | ✅ done |
+| 4. Discord sign-in | ✅ **working** |
+| 5. Google sign-in | ⬜ not set up — its button shows a cross until it is |
 
-At the end you will paste **two public values** into `src/config.js`. The two
-*secret* values never leave the Supabase dashboard, and I never need to see them.
+The sign-in buttons read the project's live provider list, so **Google lights up
+on its own** the moment step 5 is finished. No code change, no redeploy.
+
+Steps 1–3 are recorded below for reference. If you are only here for Google,
+skip to section 4.
+
+Everything is free. The two *secret* values never leave the Supabase dashboard.
 
 ---
 
@@ -42,35 +51,51 @@ Both are safe to commit — the anon key is designed to be public, and the RLS
 policies from step 2 are what actually protect the data. **Never** copy the
 `service_role` key into this project; it bypasses RLS entirely.
 
-## 4. Google sign-in (7 min)
+## 4. Google sign-in — ⬜ REMAINING
 
-1. https://console.cloud.google.com → create a project (any name).
-2. **APIs & Services → OAuth consent screen.** Choose **External**, fill in the
-   app name, your email, and save. You can leave it in "Testing" mode while only
-   you use it; to let anyone sign in, press **Publish app**.
-3. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
+The callback URL both providers need:
+
+```
+https://yvttgbuhwkjeqqvblcbc.supabase.co/auth/v1/callback
+```
+
+1. https://console.cloud.google.com → create a project named `Ruledrift`.
+2. **OAuth consent screen** → **External** → app name, your email as both
+   support and developer contact → save through to the end → **Publish app**
+   (without publishing, only hand-listed test accounts can sign in).
+3. **Credentials → Create credentials → OAuth client ID**
    - Application type: **Web application**
    - **Authorised JavaScript origins:** `https://ruledrift.vercel.app`
-   - **Authorised redirect URI:** this must be your Supabase callback, exactly:
-     ```
-     https://<your-project-ref>.supabase.co/auth/v1/callback
-     ```
-     Supabase shows you this exact string in step 5 — copy it from there rather
-     than typing it.
-4. Copy the **Client ID** and **Client secret**.
-5. In Supabase: **Authentication → Providers → Google**, switch it on, paste the
-   two values, **Save**.
+   - **Authorised redirect URI:** the callback URL above
 
-## 5. Discord sign-in (5 min)
+   These two fields are different and easy to swap. Origin = the game.
+   Redirect = Supabase.
+4. Copy the **Client ID** and **Client secret**. Do not screenshot the secret.
+5. In Supabase: **Authentication → Providers → Google**, switch it on, paste
+   both, **Save**.
+
+Google's console was redesigned recently, so the menu names above may not match
+what is on screen. The credentials page is at
+https://console.cloud.google.com/auth/clients.
+
+## 5. Discord sign-in — ✅ DONE
+
+Recorded for reference. App name `Ruledrift`, Client ID `1545474193758621776`.
 
 1. https://discord.com/developers/applications → **New Application**.
-2. **OAuth2** in the sidebar. Under **Redirects**, add the same Supabase callback
-   URL as above, and save.
-3. Copy the **Client ID**, then **Reset Secret** to reveal the **Client secret**.
+2. **OAuth2** in the sidebar. Under **Redirects**, add the callback URL above,
+   and **Save Changes**.
+3. Copy the **Client ID**, then **Reset Secret** for the **Client secret**.
 4. In Supabase: **Authentication → Providers → Discord**, switch it on, paste
    both, **Save**.
 
-## 6. Point Supabase back at the game (1 min)
+## 6. Point Supabase back at the game — ✅ DONE
+
+⚠️ The trap that cost us a round of debugging: **Site URL defaults to
+`http://localhost:3000`.** Sign-in then succeeds and dumps the player on
+ERR_CONNECTION_REFUSED. There are also **two separate Save buttons** on this
+page — it is easy to save one and not the other.
+
 
 **Authentication → URL Configuration:**
 
@@ -96,15 +121,16 @@ Then redeploy:
 vercel deploy --prod --yes
 ```
 
-The sign-in buttons appear on the **Profile** screen automatically. Until those
-two values are filled in, the game behaves exactly as before and shows no
-sign-in UI at all.
+The sign-in buttons appear under **Profile** and **Settings**. Until those two
+values are filled in, the game behaves exactly as before and shows no sign-in UI
+at all. A provider that is not switched on renders greyed out with a cross,
+read live from the project rather than hardcoded.
 
 ---
 
 ## How to check it works
 
-1. Open the game, go to **Profile**, press **Continue with Google**.
+1. Open the game, go to **Profile** (or **Settings**), press the provider button.
 2. You should land back on the Profile screen, signed in, with a toast reading
    *"Signed in — progress backed up"*.
 3. In Supabase, **Table Editor → profiles** should show one row, with your

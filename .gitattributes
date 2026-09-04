@@ -1,0 +1,6 @@
+# Normalise line endings so commits from Windows stop warning on every file.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
