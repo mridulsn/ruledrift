@@ -115,7 +115,11 @@ function footer() {
       user
         ? `Playable offline. Backed up to your account (${user.email || user.name}).`
         : "Playable offline. Nothing you play leaves this device."),
-    h("div", { style: "margin-top:4px" }, "Built by Mridul"));
+    h("div", { style: "margin-top:4px" }, "Built by Mridul"),
+    h("div", { class: "footer-links", style: "margin-top:6px" },
+      h("a", { href: "privacy" }, "Privacy"),
+      " · ",
+      h("a", { href: "terms" }, "Terms")));
 }
 
 /** A small non-interactive board, used by the guide and the codex. */
@@ -153,11 +157,23 @@ function workedExample(tiles, target, captionFn, note) {
  */
 async function syncNow({ quiet = true } = {}) {
   if (!cloud.signedIn()) return false;
-  const remote = await cloud.pull();
-  if (remote) {
-    const merged = store.mergeProfiles(profile, remote);
+
+  const read = await cloud.pull();
+
+  // A failed read must never be treated as an empty cloud. Writing here would
+  // push this device's profile over a backup we simply could not see - which is
+  // exactly how a fresh device wipes out years of play.
+  if (!read.ok) {
+    cloud.queueSync();
+    if (!quiet) toast("Could not reach your backup - nothing was changed.");
+    return false;
+  }
+
+  if (read.data) {
+    const merged = store.mergeProfiles(profile, read.data);
     profile = store.replaceLocal(merged);
   }
+
   const ok = await cloud.push(profile);
   if (!ok) {
     cloud.queueSync();
@@ -166,6 +182,18 @@ async function syncNow({ quiet = true } = {}) {
     toast("Synced");
   }
   return ok;
+}
+
+/** Human-readable proof of the last confirmed backup. */
+function syncedLabel() {
+  const at = cloud.lastSyncedAt();
+  if (!at) return "Not backed up yet";
+  const mins = Math.floor((Date.now() - at) / 60000);
+  if (mins < 1) return "Backed up just now";
+  if (mins < 60) return `Backed up ${mins} min ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `Backed up ${hrs}h ago`;
+  return `Backed up ${new Date(at).toLocaleDateString()}`;
 }
 
 /** Fire-and-forget sync after a run, so finishing a game is never blocked. */
@@ -1010,9 +1038,77 @@ function screenProfile() {
  * switched on in the project. The state is read live and cached, so enabling a
  * provider in the dashboard lights its button up with no code change.
  */
+/**
+ * A small sheet holding Google's own sign-in button.
+ *
+ * Google renders that button itself and forbids restyling it, so it cannot sit
+ * inline next to ours without looking like a mistake. In its own sheet it looks
+ * like exactly what it is - Google asking, not us - which is the point.
+ */
+function googleSheet() {
+  const slot = h("div", { class: "gsi-slot" });
+  const status = h("div", { class: "tiny muted", style: "margin-top:14px;min-height:16px" });
+
+  const back = h("div", { class: "sheet-back" });
+  const close = () => back.remove();
+
+  const card = h("div", { class: "sheet" },
+    h("div", { class: "sheet-t" }, "Continue with Google"),
+    h("div", { class: "sheet-s" },
+      "Google confirms it is you. Ruledrift only ever receives your name and email address."),
+    slot,
+    status,
+    h("button", { class: "btn btn-sm", style: "margin-top:14px", onclick: close }, "Cancel"));
+
+  back.appendChild(card);
+  back.addEventListener("click", (e) => { if (e.target === back) close(); });
+  document.body.appendChild(back);
+
+  const dark = !window.matchMedia("(prefers-color-scheme: light)").matches
+    || document.documentElement.dataset.theme === "dark";
+
+  cloud.mountGoogleButton(slot, { dark, width: Math.min(320, window.innerWidth - 96) },
+    async (session) => {
+      if (!session) {
+        status.textContent = "Google refused that sign-in. Nothing was changed.";
+        return;
+      }
+      status.textContent = "Signing you in...";
+      await syncNow({ quiet: true }).catch(() => cloud.queueSync());
+      profile = store.load();
+      const u = cloud.currentUser();
+      if (u && !profile.name) profile = store.setIdentity(profile, { name: u.name });
+      close();
+      toast("Signed in - progress backed up");
+      screenProfile();
+    }
+  ).catch(() => {
+    // Offline, or a blocker ate Google's script. Say so rather than showing an
+    // empty box, and leave the redirect route as the way out.
+    status.textContent = "Could not reach Google. Check your connection, or use Discord.";
+  });
+}
+
+// Official brand marks, inlined. A red square with a "G" in it is the tell of a
+// login screen nobody should trust; the real logo is the cheapest credibility
+// on the page, and it costs one path each.
+const BRAND_SVG = {
+  google:
+    '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">' +
+    '<path fill="#4285F4" d="M23.5 12.3c0-.8-.1-1.6-.2-2.3H12v4.5h6.5a5.6 5.6 0 0 1-2.4 3.6v3h3.9c2.3-2.1 3.5-5.2 3.5-8.8z"/>' +
+    '<path fill="#34A853" d="M12 24c3.2 0 5.9-1.1 7.9-2.9l-3.9-3c-1 .7-2.4 1.1-4 1.1-3.1 0-5.7-2.1-6.6-4.9H1.4v3.1A12 12 0 0 0 12 24z"/>' +
+    '<path fill="#FBBC05" d="M5.4 14.3a7.2 7.2 0 0 1 0-4.6V6.6H1.4a12 12 0 0 0 0 10.8l4-3.1z"/>' +
+    '<path fill="#EA4335" d="M12 4.8c1.8 0 3.3.6 4.6 1.8l3.4-3.4A12 12 0 0 0 1.4 6.6l4 3.1C6.3 6.9 8.9 4.8 12 4.8z"/>' +
+    "</svg>",
+  discord:
+    '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="#fff">' +
+    '<path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.2.4a18.3 18.3 0 0 1 4.3 2.1 17.6 17.6 0 0 0-15 0 18.3 18.3 0 0 1 4.3-2.1L8.6 3a19.8 19.8 0 0 0-5 1.4C.6 8.9-.3 13.3.2 17.6a19.9 19.9 0 0 0 6 3l1.2-1.7a13 13 0 0 1-2-1c.2-.1.3-.2.5-.3a14.2 14.2 0 0 0 12.2 0l.5.3a13 13 0 0 1-2 1l1.2 1.7a19.9 19.9 0 0 0 6-3c.6-5-.8-9.4-3.5-13.2zM8.0 15c-1.2 0-2.1-1.1-2.1-2.4S6.8 10.2 8 10.2s2.2 1.1 2.1 2.4S9.2 15 8 15zm8 0c-1.2 0-2.1-1.1-2.1-2.4s.9-2.4 2.1-2.4 2.2 1.1 2.1 2.4S17.2 15 16 15z"/>' +
+    "</svg>",
+};
+
 function providerButtons() {
   const known = cloud.cachedProviders();
-  const box = h("div", { class: "stack", style: "margin-top:12px" });
+  const box = h("div", { class: "stack oauth-stack", style: "margin-top:12px" });
 
   const paint = (avail) => {
     box.replaceChildren(
@@ -1020,14 +1116,24 @@ function providerButtons() {
         // Unknown (never asked, or offline) is treated as available - better to
         // let someone try than to block a login that would have worked.
         const off = avail ? avail[p.id] === false : false;
+
+        // Google goes straight to Google from this origin; everything else
+        // still routes through Supabase's redirect.
+        const start = () => {
+          if (p.id === "google" && cloud.googleIdConfigured()) googleSheet();
+          else cloud.signIn(p.id);
+        };
+
         return h("button", {
           class: `btn oauth oauth-${p.id}` + (off ? " oauth-off" : ""),
           disabled: off,
           title: off ? "Not set up yet" : "",
-          onclick: off ? null : () => cloud.signIn(p.id),
+          onclick: off ? null : start,
         },
-          h("span", { class: "oa-icon" }, off ? "✕" : p.icon),
-          h("span", { style: "flex:1;text-align:left" }, p.label),
+          off
+            ? h("span", { class: "oa-icon" }, "✕")
+            : h("span", { class: "oa-icon", html: BRAND_SVG[p.id] || "" }),
+          h("span", { class: "oa-label" }, p.label),
           off ? h("span", { class: "oa-note" }, "Not set up yet") : null);
       })
     );
@@ -1076,15 +1182,31 @@ function accountCard() {
         h("div", { style: "font-weight:700" }, user.name),
         h("div", { class: "small muted", style: "overflow:hidden;text-overflow:ellipsis" }, user.email),
         h("div", { class: "tiny", style: "margin-top:4px" },
-          queued ? "⚠ Changes waiting to sync" : `Backed up · signed in with ${user.provider || "OAuth"}`))),
+          // "Backed up" as a bare claim is worth nothing - the whole failure
+          // mode here is a sync that quietly did not happen. Show the receipt.
+          queued
+            ? "⚠ Changes waiting to sync"
+            : `${syncedLabel()} · ${user.provider || "OAuth"}`))),
     h("div", { class: "btn-row", style: "margin-top:14px" },
       h("button", { class: "btn btn-sm", onclick: async (e) => {
         e.currentTarget.textContent = "Syncing...";
         await syncNow({ quiet: false });
         screenProfile();
       } }, "Sync now"),
-      h("button", { class: "btn btn-sm", onclick: async () => {
+      h("button", { class: "btn btn-sm", onclick: async (e) => {
         if (!confirm("Sign out? Your progress stays on this device and in the cloud.")) return;
+        // Back up before dropping the session. Signing out with unsynced play
+        // is the one moment where "we'll sync later" is a lie - there is no
+        // later, because the next device has no way to know what it missed.
+        const btn = e.currentTarget;
+        btn.textContent = "Backing up...";
+        const ok = await syncNow({ quiet: true }).catch(() => false);
+        if (!ok && !confirm(
+          "Your latest progress could not be backed up. Sign out anyway? " +
+          "It stays on this device, but another device will not see it.")) {
+          btn.textContent = "Sign out";
+          return;
+        }
         await cloud.signOut();
         toast("Signed out");
         screenProfile();

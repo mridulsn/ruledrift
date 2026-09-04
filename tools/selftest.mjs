@@ -8,8 +8,8 @@ import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
 import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
 import { mergeProfiles, streaksFromDays } from "../src/storage.js";
-import { cloudConfigured, PROVIDERS, signedIn, providerAvailability } from "../src/cloud.js";
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from "../src/config.js";
+import { cloudConfigured, PROVIDERS, signedIn, providerAvailability, readPullResponse } from "../src/cloud.js";
+import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID } from "../src/config.js";
 
 let failures = 0;
 function check(name, cond, detail = "") {
@@ -436,6 +436,33 @@ console.log("\n13. Cloud is optional and fails soft");
   check("a provider that is off reads as unavailable", live.google === false);
   check("availability only covers providers we actually offer",
     Object.keys(live).sort().join(",") === "discord,google", Object.keys(live).join(","));
+  // The bug this replaces: a failed read and an empty cloud both returned null,
+  // so a fresh device that could not read would push its empty profile over a
+  // real backup and destroy it. These two cases must never look alike.
+  const failed = readPullResponse(false);
+  const empty = readPullResponse(true, []);
+  const found = readPullResponse(true, [{ data: { history: [1, 2, 3] } }]);
+  check("a failed read is not ok", failed.ok === false);
+  check("an empty cloud IS ok, just empty", empty.ok === true && empty.data === null);
+  check("a failed read is distinguishable from an empty cloud", failed.ok !== empty.ok);
+  check("a found profile comes back intact", found.ok === true && found.data.history.length === 3);
+
+  // And the merge it feeds: an empty device must inherit the cloud, never erase it.
+  const restored = mergeProfiles(
+    { history: [], dailyResults: {}, updatedAt: 0 },
+    { history: [{ playedAt: 5, seed: "AAA", score: 90 }], dailyResults: { "2026-09-01": { score: 90 } }, updatedAt: 10 }
+  );
+  check("a fresh device inherits the cloud history rather than blanking it",
+    restored.history.length === 1 && restored.history[0].score === 90,
+    JSON.stringify(restored.history));
+
+  // Google sign-in runs on our own domain via Google Identity Services, which
+  // only works if the client ID is the real one. A typo here fails silently at
+  // runtime - the button simply never appears - so assert its shape instead.
+  check("the Google client ID is either unset or a real one",
+    GOOGLE_CLIENT_ID === "" || /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(GOOGLE_CLIENT_ID),
+    GOOGLE_CLIENT_ID || "(unset)");
+
   check("a missing settings payload disables everything rather than lying",
     Object.values(providerAvailability(null)).every((v) => v === false));
   check("an empty external map disables everything",

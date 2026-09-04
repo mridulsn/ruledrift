@@ -431,9 +431,11 @@ footer a { color: var(--ink-3); }
   width:40px;height:40px;border-radius:11px;display:grid;place-items:center;
   background:var(--bg-3);font-size:19px;flex:none;
 }
-.mode .tx{flex:1;min-width:0}
-.mode .nm{font-weight:700;font-size:15px}
-.mode .bl{font-size:12.5px;color:var(--ink-3);margin-top:1px}
+/* Title and blurb are spans, so they must be told to stack - left inline they
+   run straight into each other ("How to playThe rules, with worked examples"). */
+.mode .tx{flex:1;min-width:0;display:flex;flex-direction:column}
+.mode .nm{display:block;font-weight:700;font-size:15px}
+.mode .bl{display:block;font-size:12.5px;color:var(--ink-3);margin-top:1px}
 .mode .go{color:var(--ink-3);font-size:18px}
 .mode.hero{background:linear-gradient(135deg,var(--accent),var(--accent-2));border-color:transparent;color:#06121a}
 .mode.hero .ic{background:rgba(255,255,255,.25)}
@@ -602,3 +604,79 @@ img.pavatar{object-fit:cover}
   font-size:11px;letter-spacing:.04em;text-transform:uppercase;
   color:var(--ink-3);font-weight:700;flex:none;
 }
+
+/* Footer links to the legal pages. Muted - present, never competing with play. */
+.footer-links a {
+  color: var(--ink-3);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.footer-links a:hover { color: var(--ink-2); border-bottom-color: var(--line); }
+
+/* ---------- the sign-in stack ----------
+   Both buttons are ours now, so they can share one shape instead of one of them
+   being a fixed asset from somebody else's design system. The brand only shows
+   up where it has to: the real logo, on its own tile, in its own colour. */
+.oauth-stack { gap: 10px; }
+
+.oauth-stack .oauth {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 0 14px;
+  margin-bottom: 0;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  background: var(--bg-3);
+  transition: border-color .15s ease, transform .09s ease, background .15s ease;
+}
+.oauth-stack .oauth:active { transform: scale(.99); }
+
+.oauth-stack .oa-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .3);
+}
+.oauth-stack .oa-label { flex: 1; text-align: left; }
+
+/* Google's mark is only legible on white - that is in their brand rules and it
+   is also just true. Discord's is the reverse. */
+.oauth-stack .oauth-google .oa-icon  { background: #fff; }
+.oauth-stack .oauth-discord .oa-icon { background: #5865f2; }
+.oauth-stack .oauth-google:hover  { border-color: #4285f4; background: color-mix(in srgb, #4285f4 7%, var(--bg-3)); }
+.oauth-stack .oauth-discord:hover { border-color: #5865f2; background: color-mix(in srgb, #5865f2 7%, var(--bg-3)); }
+
+.oauth-stack .oauth-off .oa-icon { background: var(--bg-2); box-shadow: none; }
+
+/* Footer links to the legal pages. Muted - present, never competing with play. */
+.footer-links a {
+  color: var(--ink-3);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.footer-links a:hover { color: var(--ink-2); border-bottom-color: var(--line); }
+
+/* ---------- the Google sheet ----------
+   Google's button is a fixed asset from someone else's design system. Given its
+   own surface it reads as deliberate; inline beside our buttons it read as a
+   bug. The sheet is deliberately plain - it is a handover, not a destination. */
+.sheet-back{
+  position:fixed;inset:0;z-index:60;display:grid;place-items:center;padding:20px;
+  background:rgba(4,7,12,.72);backdrop-filter:blur(3px);
+}
+.sheet{
+  width:100%;max-width:380px;padding:24px 22px;text-align:center;
+  background:var(--bg-2);border:1px solid var(--line);
+  border-radius:var(--radius);box-shadow:var(--shadow);
+}
+.sheet-t{font-weight:800;font-size:17px;letter-spacing:-.01em}
+.sheet-s{color:var(--ink-2);font-size:13px;line-height:1.5;margin:6px 0 18px}
+.gsi-slot{display:flex;justify-content:center;min-height:44px}

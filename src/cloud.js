@@ -12,10 +12,11 @@
 //     device. Both sides are merged (see mergeProfiles), so signing in on a new
 //     phone cannot wipe the history on your laptop.
 
-import { SUPABASE_URL, SUPABASE_ANON_KEY, REDIRECT_URL, cloudConfigured } from "./config.js";
+import { SUPABASE_URL, SUPABASE_ANON_KEY, REDIRECT_URL, GOOGLE_CLIENT_ID, cloudConfigured } from "./config.js";
 
 const SESSION_KEY = "ruledrift.session";
 const QUEUE_KEY = "ruledrift.pendingSync";
+const LAST_SYNC_KEY = "ruledrift.lastSync";
 
 export const PROVIDERS = [
   { id: "google", label: "Continue with Google", icon: "G" },
@@ -43,6 +44,21 @@ function writeSession(s) {
     else localStorage.removeItem(SESSION_KEY);
   } catch {}
   return s;
+}
+
+/** When the cloud last confirmed a write, or 0. Proof, rather than a promise. */
+export function lastSyncedAt() {
+  try {
+    return Number(localStorage.getItem(LAST_SYNC_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function markSynced() {
+  try {
+    localStorage.setItem(LAST_SYNC_KEY, String(Date.now()));
+  } catch {}
 }
 
 export function currentUser() {
@@ -99,6 +115,7 @@ export async function consumeRedirect() {
   const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
   if (!hash) return null;
   const p = new URLSearchParams(hash);
+
   const access_token = p.get("access_token");
   const refresh_token = p.get("refresh_token");
   if (!access_token) return null;
@@ -168,6 +185,142 @@ async function validToken() {
 }
 
 // ---------------------------------------------------------------------------
+// Google sign-in without the Supabase hostname
+//
+// Supabase's generic redirect sends the player to <project-ref>.supabase.co and
+// Google prints that hostname on the consent screen. It is correct and it looks
+// exactly like phishing, so Google is handled separately: the browser gets a
+// signed ID token from Google on this origin, and only that token is handed to
+// Supabase. The player is never asked to trust a domain they did not choose.
+//
+// This uses Google Identity Services, and that is not a preference - it is the
+// only route left. Doing it by hand with OpenID Connect's `response_type=
+// id_token` was tried and rejected by Google at the consent step with
+// "redirect_uri_mismatch ... doesn't comply with Google's OAuth 2.0 policy",
+// even with the redirect URI registered exactly as sent. Google has retired the
+// implicit flow for web clients and GIS is the replacement. Do not try it again.
+//
+// The cost of GIS is that Google renders its own button and forbids restyling
+// it, so it cannot sit inline beside our own. It is therefore presented in its
+// own sheet, where a Google-shaped button is exactly what a player expects.
+//
+// A per-attempt nonce carries the security: the SHA-256 goes to Google and ends
+// up inside the signed token, the raw value stays here and goes to Supabase,
+// which refuses the token unless the two agree. That is what stops a token
+// minted for another site from being replayed into this one.
+// ---------------------------------------------------------------------------
+
+const GIS_SRC = "https://accounts.google.com/gsi/client";
+
+export const googleIdConfigured = () => Boolean(GOOGLE_CLIENT_ID) && cloudConfigured();
+
+let gisLoad = null;
+
+/** Load Google's script once. Rejects offline, or if an extension blocks it. */
+function loadGis() {
+  if (window.google && window.google.accounts && window.google.accounts.id) {
+    return Promise.resolve(window.google.accounts.id);
+  }
+  if (gisLoad) return gisLoad;
+  gisLoad = new Promise((resolve, reject) => {
+    const el = document.createElement("script");
+    el.src = GIS_SRC;
+    el.async = true;
+    el.defer = true;
+    el.onload = () =>
+      window.google && window.google.accounts && window.google.accounts.id
+        ? resolve(window.google.accounts.id)
+        : reject(new Error("gsi loaded but empty"));
+    el.onerror = () => reject(new Error("gsi blocked"));
+    document.head.appendChild(el);
+  });
+  // A failed load must not poison every later attempt - the player may simply
+  // have been offline for a moment.
+  gisLoad.catch(() => { gisLoad = null; });
+  return gisLoad;
+}
+
+function hex(buf) {
+  return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function makeNonce() {
+  const raw = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const hashed = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw)));
+  return { raw, hashed };
+}
+
+/**
+ * Render Google's button into `el` and report the resulting session.
+ * @param {HTMLElement} el      container to render into
+ * @param {object}      opts    { dark: boolean, width: number }
+ * @param {function}    onDone  called with the session, or null if refused
+ * @returns {Promise<void>}     rejects if Google's script cannot be reached
+ */
+export async function mountGoogleButton(el, opts, onDone) {
+  if (!googleIdConfigured()) throw new Error("google sign-in not configured");
+  const id = await loadGis();
+  const { raw, hashed } = await makeNonce();
+
+  id.initialize({
+    client_id: GOOGLE_CLIENT_ID,
+    nonce: hashed,
+    auto_select: false,
+    callback: (resp) => {
+      Promise.resolve(
+        resp && resp.credential ? signInWithGoogleCredential(resp.credential, raw) : null
+      ).then(onDone);
+    },
+  });
+
+  id.renderButton(el, {
+    type: "standard",
+    theme: (opts && opts.dark) ? "filled_black" : "outline",
+    size: "large",
+    text: "continue_with",
+    shape: "pill",
+    logo_alignment: "left",
+    width: Math.max(200, Math.min(400, Math.round((opts && opts.width) || 300))),
+  });
+}
+
+/**
+ * Trade a Google ID token for a Supabase session.
+ * @returns {Promise<object|null>} the stored session, or null if it was refused
+ */
+export async function signInWithGoogleCredential(idToken, nonce) {
+  if (!cloudConfigured() || !idToken) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=id_token`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ provider: "google", id_token: idToken, nonce }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    if (!j.access_token) return null;
+
+    const session = {
+      access_token: j.access_token,
+      refresh_token: j.refresh_token || null,
+      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
+      user: null,
+    };
+    writeSession(session);
+
+    const user = await fetchUser(j.access_token);
+    if (!user) {
+      writeSession(null);
+      return null;
+    }
+    session.user = user;
+    return writeSession(session);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // which providers are actually switched on
 //
 // Read from the project rather than hardcoded, so a provider that gets enabled
@@ -218,21 +371,41 @@ export async function refreshProviders() {
 // profile sync
 // ---------------------------------------------------------------------------
 
-/** @returns {Promise<object|null>} the stored profile, or null if none/offline */
+/**
+ * Pure: turn a read of the profiles table into a result the caller can act on.
+ *
+ * The distinction here is the whole ball game. "There is no backup yet" and
+ * "the read failed" used to both come back as null, so a fresh device whose
+ * read failed would conclude the cloud was empty and push its empty profile
+ * over a real one. Losing someone's history to a dropped request is not a
+ * sync bug, it is data destruction, so a failure must be impossible to mistake
+ * for an absence.
+ *
+ * @returns {{ok: boolean, data: object|null}}
+ */
+export function readPullResponse(ok, rows) {
+  if (!ok) return { ok: false, data: null };
+  return { ok: true, data: rows && rows.length ? rows[0].data : null };
+}
+
+/**
+ * @returns {Promise<{ok: boolean, data: object|null}>}
+ *   ok=false means we could not read - the caller must not write.
+ *   ok=true with data=null means there is genuinely no backup yet.
+ */
 export async function pull() {
   const token = await validToken();
   const user = currentUser();
-  if (!token || !user) return null;
+  if (!token || !user) return readPullResponse(false);
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/profiles?select=data&id=eq.${user.id}`,
       { headers: authHeaders(token) }
     );
-    if (!res.ok) return null;
-    const rows = await res.json();
-    return rows && rows.length ? rows[0].data : null;
+    if (!res.ok) return readPullResponse(false);
+    return readPullResponse(true, await res.json());
   } catch {
-    return null;
+    return readPullResponse(false);
   }
 }
 
@@ -256,6 +429,7 @@ export async function push(profile) {
     });
     if (res.ok) {
       clearQueue();
+      markSynced();
       return true;
     }
     return false;

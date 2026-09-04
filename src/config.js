@@ -15,6 +15,15 @@ export const SUPABASE_URL = "https://yvttgbuhwkjeqqvblcbc.supabase.co";
 export const SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl2dHRnYnVod2tqZXFxdmJsY2JjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1MjE3NjcsImV4cCI6MjEwNDA5Nzc2N30.klR_ZzISpcoiYdccjKwCEoeKVISupc0L4DRD8UKq_bY";
 
+// Google's public OAuth client ID. Safe to commit - it is designed to be read
+// out of the page source; it identifies the app, it does not authorise anything.
+//
+// This exists so Google sign-in can happen *on this domain* via Google Identity
+// Services, rather than bouncing through <project-ref>.supabase.co. A player
+// being asked to trust a random-looking hostname is a player who closes the tab.
+export const GOOGLE_CLIENT_ID =
+  "45031354820-9t0la84m9fjng5vsrn6svj35o72b92rh.apps.googleusercontent.com";
+
 /** Where the OAuth provider sends the player back to. */
 export const REDIRECT_URL =
   typeof location !== "undefined" ? location.origin + location.pathname : "";

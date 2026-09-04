@@ -1,0 +1,24 @@
+/* Shared styling for the privacy and terms pages. Reuses the game's tokens. */
+.legal {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px 72px;
+  line-height: 1.65;
+  color: var(--ink);
+}
+.legal h1 { font-size: 1.8rem; margin: 0 0 4px; }
+.legal h2 { font-size: 1.1rem; margin: 32px 0 8px; color: var(--accent); }
+.legal .meta { color: var(--ink-3); font-size: .85rem; margin: 0 0 24px; }
+.legal p, .legal li { color: var(--ink-2); }
+.legal strong { color: var(--ink); }
+.legal ul { padding-left: 20px; }
+.legal li { margin: 6px 0; }
+.legal a { color: var(--accent-2); }
+.legal .back {
+  display: inline-block; margin-bottom: 24px; text-decoration: none;
+  color: var(--ink-2); font-size: .9rem;
+}
+.legal .box {
+  background: var(--bg-2); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px 18px; margin: 16px 0;
+}
