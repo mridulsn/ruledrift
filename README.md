@@ -6,7 +6,14 @@ A brain game that runs entirely in the browser, works with the network switched
 off, and lets you duel a friend on a byte-identical board with no server and no
 account.
 
-**Play: https://mridulsn.github.io/ruledrift/**
+**Play: deployed on Vercel.** This repository is source only - GitHub Pages is
+deliberately switched off.
+
+Run it locally with any static server:
+
+```bash
+python -m http.server 8777    # then open http://localhost:8777
+```
 
 ---
 
@@ -76,6 +83,58 @@ RULEDRIFT Daily #248
 
 🟩 correct · 🟦 caught a rule change · 🟧 stuck on the old rule · 🟥 wrong
 
+## Teaching the game in sixty seconds
+
+The first build failed the only test that matters: a real player opened it and
+did not know what he was looking at. A game whose entire premise is *"you are
+not told the rule"* has an obvious onboarding problem, and a wall of text is not
+the fix - FTUE research is blunt about it: *put a gap in front of them, not a
+manual.*
+
+So the tutorial is five hand-built boards that teach by being played:
+
+1. Four tiles with one dot, one with five. No instructions beyond "tap one."
+   The player's first action is a **win, inside ten seconds.**
+2-3. The same rule twice more, with shapes and colours now varying as noise.
+   The player learns to ignore the noise and starts to trust the rule.
+4. **The rug-pull.** The rule silently becomes *lone colour*, and the board is
+   built so the most-dots tile is a different tile. The player taps it, is
+   wrong, and only then is told what actually happened. That single moment is
+   the entire game, and it cannot be left to chance on trial four.
+5. One more board on the new rule, to prove they have adapted.
+
+Nothing in the tutorial can kill you; a wrong tap just asks you to look again.
+It is skippable, and replayable from the profile screen.
+
+A test asserts that step 4's board really does punish the old rule - if that
+invariant broke, the tutorial would quietly stop teaching anything.
+
+## Modes
+
+| Mode | What changes |
+|---|---|
+| **Daily** | One board a day, seeded from the date - identical for everyone |
+| **Quick** | A fresh random board |
+| **Zen** | No clock at all, five lives. For thinking rather than reacting |
+| **Blitz** | 62% of the normal time |
+| **Gauntlet** | The rule changes every three correct answers |
+| **Duel** | The exact board a friend played |
+
+## Progression
+
+- **Rank and XP** across eight ranks, from Drifter to Ruledrifter.
+- **Fourteen achievements**, most of them *stepped* (I / II / III on one axis)
+  rather than one-off novelties - players who complete a stepped achievement on
+  day one retain far better than players who complete none.
+- **Rule codex** - each of the eight rules, with a worked example board and your
+  real accuracy on it, unlocking as you play.
+- **Profile** with a name and avatar (used to label you in duels) and lifetime
+  totals.
+
+Every achievement rewards something a player already wants to do - adapting
+faster, switching cleanly, showing up. Manufactured goals produce a spike and
+then nothing.
+
 ## Retention design
 
 Deliberate, and drawn from what the 2026 benchmarks actually support rather than
@@ -105,10 +164,18 @@ src/share.js     result codes, duel comparison
 src/charts.js    hand-rolled SVG charts (no chart library)
 src/tiles.js     tile rendering
 src/audio.js     WebAudio blips - no audio assets
+src/tutorial.js  the five scripted onboarding boards
+src/achievements.js  ranks, XP, stepped achievements
+src/juice.js     particles, floating text, shake, haptics
 src/main.js      screens and the game loop
-tools/selftest.mjs   engine invariant tests
+tools/selftest.mjs   34 invariant tests
 tools/make_icons.py  icon generation
 ```
+
+Feedback timing follows the pattern that reads best: sound and flash together,
+particles ~50ms later, floating score at ~100ms. Staggering them is what makes a
+tap feel like an event rather than a state change. All of it respects
+`prefers-reduced-motion`.
 
 ### Two invariants worth calling out
 
@@ -123,7 +190,7 @@ Both are enforced by the generator and covered by tests:
 
 ```bash
 python -m http.server 8777      # any static server works
-node tools/selftest.mjs         # 20 engine invariant checks
+node tools/selftest.mjs         # 34 invariant checks
 python tools/make_icons.py      # regenerate icons
 ```
 
@@ -133,6 +200,7 @@ network calls of any kind.
 ## Roadmap
 
 - [ ] Live rooms (real-time duel over a small serverless relay)
+- [ ] Two-attribute conjunction rules ("lone colour AND most dots")
 - [ ] Weekly resettable leaderboard - repeating boards drive materially more
       competitive engagement than perpetual ones
 - [ ] More rule families (relational rules, two-attribute conjunctions)

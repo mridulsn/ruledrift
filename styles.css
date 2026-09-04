@@ -370,3 +370,137 @@ ol.how b { color: var(--ink); }
 
 footer { margin-top: auto; padding-top: 22px; text-align: center; font-size: 12px; color: var(--ink-3); }
 footer a { color: var(--ink-3); }
+
+/* ---------- fx layer ---------- */
+#fxlayer{position:fixed;inset:0;pointer-events:none;z-index:60;overflow:hidden}
+.fx-float{
+  position:absolute;transform:translate(-50%,-50%);
+  font-weight:800;font-size:17px;color:var(--good);
+  text-shadow:0 2px 10px rgba(0,0,0,.5);
+  animation:fxfloat .9s cubic-bezier(.2,.7,.3,1) forwards;white-space:nowrap;
+}
+.fx-float.big{font-size:24px;color:var(--switch)}
+.fx-float.bad{color:var(--bad)}
+@keyframes fxfloat{
+  0%{opacity:0;transform:translate(-50%,-40%) scale(.85)}
+  20%{opacity:1;transform:translate(-50%,-60%) scale(1.06)}
+  100%{opacity:0;transform:translate(-50%,-130%) scale(1)}
+}
+.fx-particle{
+  position:absolute;width:7px;height:7px;border-radius:50%;
+  transform:translate(-50%,-50%);animation:fxpart .6s ease-out forwards;
+}
+@keyframes fxpart{
+  0%{opacity:1;transform:translate(-50%,-50%) scale(1)}
+  100%{opacity:0;transform:translate(calc(-50% + var(--dx)),calc(-50% + var(--dy))) scale(.25)}
+}
+.fx-ring{
+  position:absolute;width:24px;height:24px;border-radius:50%;
+  border:2.5px solid var(--switch);transform:translate(-50%,-50%);
+  animation:fxring .6s ease-out forwards;
+}
+@keyframes fxring{
+  0%{opacity:.9;width:20px;height:20px}
+  100%{opacity:0;width:190px;height:190px}
+}
+.fx-flash{position:absolute;inset:0;animation:fxflash .28s ease-out forwards}
+.fx-flash.bad{background:radial-gradient(circle at 50% 45%,transparent 45%,rgba(242,85,90,.30))}
+@keyframes fxflash{0%{opacity:1}100%{opacity:0}}
+.fx-shake{animation:fxshake .32s cubic-bezier(.36,.07,.19,.97)}
+@keyframes fxshake{
+  10%,90%{transform:translateX(calc(-2px * var(--shake,1)))}
+  20%,80%{transform:translateX(calc(4px * var(--shake,1)))}
+  30%,50%,70%{transform:translateX(calc(-7px * var(--shake,1)))}
+  40%,60%{transform:translateX(calc(7px * var(--shake,1)))}
+}
+@media (prefers-reduced-motion: reduce){
+  .fx-float{animation-duration:.4s}
+  .brand .dot{animation:none}
+}
+
+/* ---------- mode picker ---------- */
+.modes{display:grid;gap:10px}
+.mode{
+  display:flex;align-items:center;gap:13px;text-align:left;width:100%;
+  padding:14px 15px;border-radius:13px;background:var(--bg-2);
+  border:1px solid var(--line);transition:border-color .14s ease,transform .08s ease;
+}
+.mode:hover{border-color:var(--ink-3)}
+.mode:active{transform:scale(.99)}
+.mode .ic{
+  width:40px;height:40px;border-radius:11px;display:grid;place-items:center;
+  background:var(--bg-3);font-size:19px;flex:none;
+}
+.mode .tx{flex:1;min-width:0}
+.mode .nm{font-weight:700;font-size:15px}
+.mode .bl{font-size:12.5px;color:var(--ink-3);margin-top:1px}
+.mode .go{color:var(--ink-3);font-size:18px}
+.mode.hero{background:linear-gradient(135deg,var(--accent),var(--accent-2));border-color:transparent;color:#06121a}
+.mode.hero .ic{background:rgba(255,255,255,.25)}
+.mode.hero .bl{color:rgba(6,18,26,.72)}
+.mode.hero .go{color:#06121a}
+
+/* ---------- profile ---------- */
+.pcard{display:flex;align-items:center;gap:15px}
+.pavatar{
+  width:60px;height:60px;border-radius:17px;background:var(--bg-3);
+  border:1px solid var(--line);display:grid;place-items:center;font-size:30px;flex:none;
+}
+.xpbar{height:7px;border-radius:999px;background:var(--bg-3);overflow:hidden;margin-top:8px;border:1px solid var(--line)}
+.xpbar>i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2))}
+.avatar-pick{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.avatar-pick button{
+  width:44px;height:44px;border-radius:12px;background:var(--bg-3);
+  border:1px solid var(--line);font-size:21px;display:grid;place-items:center;
+}
+.avatar-pick button[aria-pressed="true"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 18%,var(--bg-3))}
+
+/* ---------- achievements ---------- */
+.ach{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--line)}
+.ach:last-child{border-bottom:0}
+.ach .ic{
+  width:42px;height:42px;border-radius:12px;background:var(--bg-3);border:1px solid var(--line);
+  display:grid;place-items:center;font-size:20px;flex:none;filter:grayscale(1);opacity:.45;
+}
+.ach.got .ic{filter:none;opacity:1;border-color:var(--accent)}
+.ach .body{flex:1;min-width:0}
+.ach .nm{font-weight:700;font-size:14.5px}
+.ach .ds{font-size:12.5px;color:var(--ink-3);margin-top:1px}
+.ach .pr{height:6px;border-radius:999px;background:var(--bg-3);margin-top:8px;overflow:hidden}
+.ach .pr>i{display:block;height:100%;background:var(--accent)}
+.ach .ct{font-size:11.5px;color:var(--ink-3);margin-top:5px;font-variant-numeric:tabular-nums}
+.tierdots{display:flex;gap:3px;margin-top:5px}
+.tierdots i{width:16px;height:4px;border-radius:2px;background:var(--bg-3)}
+.tierdots i.on{background:var(--accent)}
+
+/* ---------- codex / guide ---------- */
+.codex-item{display:flex;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--line)}
+.codex-item:last-child{border-bottom:0}
+.codex-item.locked{opacity:.42}
+.miniboard{display:flex;gap:5px;flex:none}
+.miniboard .mt{
+  width:34px;height:34px;border-radius:9px;background:var(--bg-3);
+  border:1px solid var(--line);display:grid;place-items:center;padding:3px;
+}
+.miniboard .mt.hit{border-color:var(--good);background:color-mix(in srgb,var(--good) 18%,var(--bg-3))}
+.miniboard .mt svg{width:100%;height:100%}
+.guide-step{display:flex;gap:14px;margin-bottom:20px}
+.guide-step .n{
+  width:28px;height:28px;border-radius:50%;background:var(--bg-3);border:1px solid var(--line);
+  display:grid;place-items:center;font-weight:800;font-size:13px;flex:none;color:var(--accent);
+}
+.guide-step .bd{flex:1;min-width:0}
+.guide-step h3{margin-bottom:4px}
+
+/* ---------- tutorial ---------- */
+.tut-banner{
+  background:var(--bg-2);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:0 12px 12px 0;padding:13px 15px;font-size:14.5px;color:var(--ink-2);
+  line-height:1.55;min-height:60px;
+}
+.tut-banner b{color:var(--ink)}
+.tut-banner.reveal{border-left-color:var(--switch);background:color-mix(in srgb,var(--switch) 8%,var(--bg-2))}
+.tut-banner.oops{border-left-color:var(--warn)}
+.tut-progress{display:flex;gap:5px;margin-bottom:14px}
+.tut-progress i{flex:1;height:4px;border-radius:2px;background:var(--bg-3)}
+.tut-progress i.on{background:var(--accent)}

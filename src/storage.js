@@ -2,9 +2,19 @@
 // playable with the network switched off, and no result ever leaves the device
 // unless the player explicitly copies a share code.
 
-const KEY = "ruledrift.v1";
+import { unlockedSet, xpFor } from "./achievements.js";
+
+const KEY = "ruledrift.v2";
+const OLD_KEY = "ruledrift.v1";
+
+export const AVATARS = ["\u{1F9E0}", "\u{1F441}", "\u{1F52E}", "\u{1F3AF}", "\u{1F9E9}", "\u{26A1}", "\u{1F98A}", "\u{1F989}", "\u{1F31F}", "\u{1F300}"];
 
 const EMPTY = {
+  name: "",
+  avatar: 0,
+  xp: 0,
+  unlocked: [],
+  ruleStats: {},      // ruleId -> { seen, correct }
   history: [],        // newest last
   bestScore: 0,
   bestBrain: 0,
@@ -33,12 +43,28 @@ function daysBetween(a, b) {
 
 export function load() {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(KEY) || localStorage.getItem(OLD_KEY);
     if (!raw) return { ...EMPTY };
-    return { ...EMPTY, ...JSON.parse(raw) };
+    const p = { ...EMPTY, ...JSON.parse(raw) };
+    // Rebuild derived fields for anyone carried over from v1.
+    if (!p.ruleStats || !Object.keys(p.ruleStats).length) p.ruleStats = rebuildRuleStats(p.history);
+    if (!p.xp) p.xp = p.history.reduce((a, r) => a + xpFor(r), 0);
+    return p;
   } catch {
     return { ...EMPTY };
   }
+}
+
+function rebuildRuleStats(history) {
+  const out = {};
+  for (const r of history || []) {
+    for (const [id, v] of Object.entries(r.byRule || {})) {
+      const s = (out[id] = out[id] || { seen: 0, correct: 0 });
+      s.seen += v.seen || 0;
+      s.correct += v.correct || 0;
+    }
+  }
+  return out;
 }
 
 export function save(profile) {
@@ -52,7 +78,7 @@ export function save(profile) {
 
 /**
  * Unlock tiers by experience, not by payment. Tier 2 lands on roughly the third
- * session and tier 3 around the eighth - the meta layer arriving on day 3-5 is
+ * session and tier 3 around the eighth - a meta layer arriving on day 3-5 is
  * the single best-supported retention lever there is.
  */
 export function tierFor(profile) {
@@ -62,11 +88,26 @@ export function tierFor(profile) {
   return 1;
 }
 
+/**
+ * @returns {{profile: object, newlyUnlocked: string[], xpGained: number, rankUp: boolean}}
+ */
 export function recordResult(profile, result) {
+  const beforeUnlocked = new Set(profile.unlocked || []);
+  const beforeXp = profile.xp || 0;
+
   profile.history.push(result);
   if (profile.history.length > 400) profile.history = profile.history.slice(-400);
   profile.bestScore = Math.max(profile.bestScore, result.score);
   profile.bestBrain = Math.max(profile.bestBrain, result.brainScore);
+
+  for (const [id, v] of Object.entries(result.byRule || {})) {
+    const s = (profile.ruleStats[id] = profile.ruleStats[id] || { seen: 0, correct: 0 });
+    s.seen += v.seen;
+    s.correct += v.correct;
+  }
+
+  const gained = xpFor(result);
+  profile.xp = beforeXp + gained;
 
   if (result.mode === "daily") {
     const today = dayKey(new Date(result.playedAt));
@@ -77,7 +118,13 @@ export function recordResult(profile, result) {
   }
 
   profile.tierUnlocked = Math.max(profile.tierUnlocked, tierFor(profile));
-  return save(profile);
+
+  const after = unlockedSet(profile, result);
+  profile.unlocked = [...after];
+  const newlyUnlocked = [...after].filter((id) => !beforeUnlocked.has(id));
+
+  save(profile);
+  return { profile, newlyUnlocked, xpGained: gained };
 }
 
 function applyStreak(profile, today) {
@@ -117,12 +164,20 @@ export function streakStatus(profile, today = dayKey()) {
 export function recordDuel(profile, entry) {
   profile.duels.unshift(entry);
   profile.duels = profile.duels.slice(0, 50);
+  profile.unlocked = [...unlockedSet(profile)];
+  return save(profile);
+}
+
+export function setIdentity(profile, { name, avatar }) {
+  if (typeof name === "string") profile.name = name.slice(0, 18);
+  if (typeof avatar === "number") profile.avatar = avatar;
   return save(profile);
 }
 
 export function resetAll() {
   try {
     localStorage.removeItem(KEY);
+    localStorage.removeItem(OLD_KEY);
   } catch {}
   return { ...EMPTY };
 }

@@ -2,40 +2,76 @@
 //
 // Pure logic: no DOM, no canvas, no timers. The UI drives it by calling
 // answer() / timeout() and reading state. That keeps it unit-testable and
-// portable if this is ever ported to Flutter for the Play Store build.
+// portable if this is ever ported to Flutter for a store build.
 
 import { makeRng, hashSeed } from "./rng.js";
 import { RULES, RULE_BY_ID, generateTrial, answerMap, ruleNeedsPrev, rulesUpToTier } from "./rules.js";
 
-export const LIVES = 3;
 const BASE_TIME_MS = 5200;
 const MIN_TIME_MS = 1700;
 const TIME_DECAY_PER_LEVEL = 260;
 const TRIALS_PER_LEVEL = 6;
 
-/** Correct answers before the rule silently changes. */
-const RUN_MIN = 4;
-const RUN_MAX = 7;
+/**
+ * Modes. Each is a different answer to "what is uncomfortable here?" - the clock,
+ * the rule changes, or nothing at all. Zen exists because a timer turns a thinking
+ * game into a reaction game, and some people want to actually think.
+ */
+export const MODES = {
+  daily: {
+    id: "daily", label: "Daily", blurb: "One board a day. Same for everyone.",
+    lives: 3, timed: true, runMin: 4, runMax: 7,
+  },
+  quick: {
+    id: "quick", label: "Quick play", blurb: "A fresh random board.",
+    lives: 3, timed: true, runMin: 4, runMax: 7,
+  },
+  zen: {
+    id: "zen", label: "Zen", blurb: "No clock. Think as long as you like.",
+    lives: 5, timed: false, runMin: 4, runMax: 7,
+  },
+  blitz: {
+    id: "blitz", label: "Blitz", blurb: "Half the time. Twice the panic.",
+    lives: 3, timed: true, runMin: 4, runMax: 7, timeScale: 0.62,
+  },
+  gauntlet: {
+    id: "gauntlet", label: "Gauntlet", blurb: "The rule changes every three.",
+    lives: 3, timed: true, runMin: 3, runMax: 3,
+  },
+  duel: {
+    id: "duel", label: "Duel", blurb: "The exact board your friend played.",
+    lives: 3, timed: true, runMin: 4, runMax: 7,
+  },
+};
 
-export function timeLimitForLevel(level) {
-  return Math.max(MIN_TIME_MS, BASE_TIME_MS - (level - 1) * TIME_DECAY_PER_LEVEL);
+export function modeConfig(id) {
+  return MODES[id] || MODES.quick;
+}
+
+export function timeLimitForLevel(level, mode = "quick") {
+  const cfg = modeConfig(mode);
+  if (!cfg.timed) return Infinity;
+  const base = Math.max(MIN_TIME_MS, BASE_TIME_MS - (level - 1) * TIME_DECAY_PER_LEVEL);
+  return Math.round(base * (cfg.timeScale || 1));
 }
 
 export class Game {
   /**
    * @param {object} opts
    * @param {string} opts.seed      seed code - identical seed means identical game
-   * @param {string} opts.mode      "daily" | "duel" | "practice"
+   * @param {string} opts.mode      key of MODES
    * @param {number} opts.maxTier   highest rule tier unlocked (1..3)
    */
-  constructor({ seed, mode = "practice", maxTier = 1 }) {
+  constructor({ seed, mode = "quick", maxTier = 1 }) {
     this.seed = seed;
     this.mode = mode;
+    this.cfg = modeConfig(mode);
+    this.maxLives = this.cfg.lives;
     this.maxTier = Math.max(1, Math.min(3, maxTier));
     this.rng = makeRng(hashSeed(seed));
     this.pool = rulesUpToTier(this.maxTier).map((r) => r.id);
 
-    this.lives = LIVES;
+    this.lives = this.maxLives;
     this.score = 0;
     this.streak = 0;
     this.maxStreak = 0;
@@ -60,7 +96,11 @@ export class Game {
   }
 
   get timeLimitMs() {
-    return timeLimitForLevel(this.level);
+    return timeLimitForLevel(this.level, this.mode);
+  }
+
+  get timed() {
+    return this.cfg.timed;
   }
 
   _eligibleRules() {
@@ -75,7 +115,7 @@ export class Game {
     this.currentRule = this.rng.pick(choices);
     this.correctSinceSwitch = 0;
     this.trialsSinceSwitch = 0;
-    this.runTarget = this.rng.range(RUN_MIN, RUN_MAX);
+    this.runTarget = this.rng.range(this.cfg.runMin, this.cfg.runMax);
     if (!first) this.ruleChanges++;
   }
 
@@ -94,7 +134,7 @@ export class Game {
   }
 
   /** Called by the UI the moment the board becomes visible. */
-  markShown(now = performance.now()) {
+  markShown(now) {
     if (this.trial) this.trial.startedAt = now;
   }
 
@@ -121,7 +161,8 @@ export class Game {
 
     let gained = 0;
     if (correct) {
-      const speedFrac = Math.max(0, 1 - rtMs / this.timeLimitMs);
+      const limit = this.timed ? this.timeLimitMs : 6000;
+      const speedFrac = Math.max(0, 1 - rtMs / limit);
       const speedBonus = Math.round(120 * speedFrac);
       const mult = Math.min(3, 1 + this.streak * 0.1);
       // Getting the first one right straight after a silent rule change is the
@@ -243,6 +284,15 @@ export function buildResult(game) {
 
   const cv = meanRt ? rtSd / meanRt : 0;
 
+  // Per-rule tallies, so the codex can show real accuracy per rule rather than
+  // smearing the session average across every rule that appeared.
+  const byRule = {};
+  for (const t of trials) {
+    const r = (byRule[t.rule] = byRule[t.rule] || { seen: 0, correct: 0 });
+    r.seen++;
+    if (t.correct) r.correct++;
+  }
+
   const domains = {
     speed: scale(meanRt || 4000, 900, 3800),
     flexibility: meanLatency === null ? null : scale(meanLatency, 1, 6),
@@ -265,6 +315,7 @@ export function buildResult(game) {
     accuracy: +accuracy.toFixed(4),
     maxStreak: game.maxStreak,
     ruleChanges: game.ruleChanges,
+    adaptations: lat.length,
     meanRt,
     rtSd,
     meanAdaptationLatency: meanLatency,
@@ -272,7 +323,8 @@ export function buildResult(game) {
     perseverativeRate: +persevRate.toFixed(4),
     domains,
     brainScore,
-    rulesSeen: [...new Set(trials.map((t) => t.rule))],
+    byRule,
+    rulesSeen: Object.keys(byRule),
     log: trials.map((t) => ({
       c: t.correct ? 1 : 0,
       s: t.isSwitchTrial ? 1 : 0,

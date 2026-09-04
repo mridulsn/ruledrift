@@ -4,6 +4,9 @@
 import { Game } from "../src/engine.js";
 import { generateTrial, evaluateRule, RULES, rulesUpToTier, ruleNeedsPrev } from "../src/rules.js";
 import { makeRng, hashSeed, randomSeedCode, dailySeedCode } from "../src/rng.js";
+import { STEPS as TUT } from "../src/tutorial.js";
+import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
+import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
 
 let failures = 0;
 function check(name, cond, detail = "") {
@@ -18,7 +21,7 @@ function check(name, cond, detail = "") {
 // Deterministic autoplayer: knows the rule, so it plays perfectly except when
 // the rule has just changed - which is exactly how a good human plays.
 function autoplay(seed, tier, { perfect = true, rng = null } = {}) {
-  const g = new Game({ seed, mode: "practice", maxTier: tier });
+  const g = new Game({ seed, mode: "quick", maxTier: tier });
   let guard = 0;
   while (!g.over && guard++ < 5000) {
     const t = g.trial;
@@ -90,7 +93,7 @@ console.log("\n4. Termination and lives");
 {
   let worst = 0;
   for (let i = 0; i < 300; i++) {
-    const g = new Game({ seed: "T" + i, mode: "practice", maxTier: 3 });
+    const g = new Game({ seed: "T" + i, mode: "quick", maxTier: 3 });
     let n = 0;
     while (!g.over && n++ < 4000) g.answer(0, 900); // always tap tile 0
     if (!g.over) { worst = -1; break; }
@@ -104,7 +107,7 @@ console.log("\n5. Echo rules never appear before there is something to echo");
 {
   let bad = 0;
   for (let i = 0; i < 400; i++) {
-    const g = new Game({ seed: "E" + i, mode: "practice", maxTier: 3 });
+    const g = new Game({ seed: "E" + i, mode: "quick", maxTier: 3 });
     if (ruleNeedsPrev(g.currentRule)) bad++;
     let n = 0;
     while (!g.over && n++ < 500) {
@@ -122,7 +125,7 @@ console.log("\n6. Perseverative errors are actually detected");
   let flagged = 0;
   let opportunities = 0;
   for (let i = 0; i < 300; i++) {
-    const g = new Game({ seed: "P" + i, mode: "practice", maxTier: 3 });
+    const g = new Game({ seed: "P" + i, mode: "quick", maxTier: 3 });
     let n = 0;
     while (!g.over && n++ < 400) {
       const t = g.trial;
@@ -169,6 +172,62 @@ console.log("\n8. Daily seed is stable within a day, different across days");
   check("same day, same seed", d1 === d1b, `${d1} vs ${d1b}`);
   check("next day, different seed", d1 !== d2);
   check("random seed codes are 6 chars", randomSeedCode().length === 6);
+}
+
+console.log("\n9. Tutorial boards are exactly what they claim");
+{
+  const rulesUsed = ["MOST_PIPS","MOST_PIPS","MOST_PIPS","UNIQUE_COLOR","UNIQUE_COLOR"];
+  let bad = 0;
+  TUT.forEach((step, i) => {
+    const got = evaluateRule(rulesUsed[i], step.tiles, null);
+    if (got !== step.target) { bad++; console.log(`     step ${i+1}: rule says ${got}, script says ${step.target}`); }
+    if (step.tiles.length !== 5) bad++;
+  });
+  check("every tutorial board's answer matches its intended rule", bad === 0, `bad=${bad}`);
+
+  // The rug-pull only teaches anything if the old rule points somewhere else.
+  const sw = TUT.find((s) => s.switched);
+  const oldRuleSays = evaluateRule("MOST_PIPS", sw.tiles, null);
+  check("the switch step punishes the OLD rule", oldRuleSays >= 0 && oldRuleSays !== sw.target,
+    `old rule -> ${oldRuleSays}, correct is ${sw.target}`);
+  check("every tutorial step has prompt, success, teach and fail text",
+    TUT.every((s) => s.prompt && s.success && s.teach && s.fail));
+}
+
+console.log("\n10. Modes behave differently");
+{
+  check("zen has no clock", timeLimitForLevel(1, "zen") === Infinity);
+  check("blitz is faster than quick", timeLimitForLevel(3, "blitz") < timeLimitForLevel(3, "quick"));
+  check("zen is more forgiving", modeConfig("zen").lives > modeConfig("quick").lives);
+  check("gauntlet switches every 3", modeConfig("gauntlet").runMin === 3 && modeConfig("gauntlet").runMax === 3);
+
+  const g = new Game({ seed: "GAUNT", mode: "gauntlet", maxTier: 3 });
+  let n = 0;
+  while (!g.over && n++ < 60) g.answer(g.trial.target, 700);
+  check("gauntlet produces far more rule changes", g.ruleChanges >= 12, `changes=${g.ruleChanges} in ${g.trials.length} trials`);
+
+  const zen = new Game({ seed: "ZEN", mode: "zen", maxTier: 2 });
+  check("zen reports itself untimed", zen.timed === false && zen.maxLives === 5);
+}
+
+console.log("\n11. Ranks and achievements");
+{
+  check("rank 0 XP is the first rank", rankFor(0).index === 1);
+  check("rank climbs with XP", rankFor(200000).index === 8 && rankFor(200000).next === null);
+  check("rank progress stays in 0..1",
+    [0, 1500, 9000, 60000, 999999].every((x) => { const r = rankFor(x); return r.progress >= 0 && r.progress <= 1; }));
+
+  const empty = { history: [], duels: [], ruleStats: {}, unlocked: [], xp: 0, longestStreak: 0, bestBrain: 0, bestScore: 0 };
+  const rows = achievementRows(empty);
+  check("a new player has every achievement locked", rows.every((r) => r.tier === 0), rows.filter(r=>r.tier>0).map(r=>r.id).join(","));
+  check("achievement rows never NaN",
+    rows.every((r) => Number.isFinite(r.progress) && r.progress >= 0 && r.progress <= 1));
+
+  const played = { ...empty, history: [{ adaptations: 6, maxStreak: 9, trials: 20, correct: 18, byRule: {} }], longestStreak: 3, bestBrain: 55 };
+  const rows2 = achievementRows(played);
+  const adapt = rows2.find((r) => r.id === "adapt");
+  check("stepped achievement advances one tier at 6 adaptations", adapt.tier === 1, `tier=${adapt.tier}`);
+  check("lifetime stats aggregate history", lifetimeStats(played).adaptations === 6);
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);
