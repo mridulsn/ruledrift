@@ -7,6 +7,8 @@ import { makeRng, hashSeed, randomSeedCode, dailySeedCode } from "../src/rng.js"
 import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
 import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
+import { mergeProfiles, streaksFromDays } from "../src/storage.js";
+import { cloudConfigured, PROVIDERS, signedIn, signIn } from "../src/cloud.js";
 
 let failures = 0;
 function check(name, cond, detail = "") {
@@ -319,6 +321,89 @@ console.log("\n11. Ranks and achievements");
   const adapt = rows2.find((r) => r.id === "adapt");
   check("stepped achievement advances one tier at 6 adaptations", adapt.tier === 1, `tier=${adapt.tier}`);
   check("lifetime stats aggregate history", lifetimeStats(played).adaptations === 6);
+}
+
+console.log("\n12. Profile merge never loses or invents progress");
+{
+  const mkResult = (t, score, mode = "quick") => ({
+    seed: "S" + t, mode, playedAt: t, score, level: 2, trials: 20, correct: 16,
+    accuracy: 0.8, maxStreak: 5, ruleChanges: 2, adaptations: 2, meanRt: 1200,
+    rtSd: 200, meanAdaptationLatency: 2, perseverativeErrors: 1,
+    perseverativeRate: 0.25, brainScore: 60, domains: {}, byRule: { MOST_PIPS: { seen: 10, correct: 8 } },
+    rulesSeen: ["MOST_PIPS"], log: [],
+  });
+  const base = () => ({
+    name: "", avatar: 0, updatedAt: 0, xp: 0, unlocked: [], ruleStats: {},
+    history: [], bestScore: 0, bestBrain: 0, streak: 0, longestStreak: 0,
+    lastDailyDay: null, freezes: 1, dailyResults: {}, tierUnlocked: 1,
+    duels: [], createdAt: 1000,
+  });
+
+  const laptop = { ...base(), name: "Laptop", updatedAt: 500,
+    history: [mkResult(100, 1000), mkResult(200, 2000)], bestScore: 2000, bestBrain: 60, xp: 3000 };
+  const phone = { ...base(), name: "Phone", updatedAt: 900,
+    history: [mkResult(300, 5000), mkResult(200, 2000)], bestScore: 5000, bestBrain: 60, xp: 7000 };
+
+  const m = mergeProfiles(laptop, phone);
+  check("merge keeps every distinct session", m.history.length === 3, `got ${m.history.length}`);
+  check("merge de-duplicates the shared session",
+    m.history.filter((r) => r.playedAt === 200).length === 1);
+  check("merge keeps the better best-score", m.bestScore === 5000, String(m.bestScore));
+  check("merge takes the newer device's display name", m.name === "Phone", m.name);
+  check("merge keeps the earliest created date", m.createdAt === 1000);
+
+  // The property that matters most: syncing twice must not double anything.
+  const once = mergeProfiles(laptop, phone);
+  const twice = mergeProfiles(once, phone);
+  const thrice = mergeProfiles(twice, phone);
+  check("merging repeatedly is idempotent (XP)", once.xp === twice.xp && twice.xp === thrice.xp,
+    `${once.xp} -> ${twice.xp} -> ${thrice.xp}`);
+  check("merging repeatedly is idempotent (history)",
+    once.history.length === thrice.history.length, `${once.history.length} vs ${thrice.history.length}`);
+  check("merging with itself changes nothing",
+    JSON.stringify(mergeProfiles(once, once).history) === JSON.stringify(once.history));
+
+  const ab = mergeProfiles(laptop, phone);
+  const ba = mergeProfiles(phone, laptop);
+  check("merge order does not matter (history)",
+    JSON.stringify(ab.history.map((r) => r.playedAt)) === JSON.stringify(ba.history.map((r) => r.playedAt)));
+  check("merge order does not matter (XP)", ab.xp === ba.xp, `${ab.xp} vs ${ba.xp}`);
+
+  check("rule tallies are never summed into fiction",
+    ab.ruleStats.MOST_PIPS.seen <= 30, JSON.stringify(ab.ruleStats.MOST_PIPS));
+
+  // A brand new device signing in must adopt the cloud, not erase it.
+  const fresh = mergeProfiles(base(), phone);
+  check("an empty device adopts the cloud history", fresh.history.length === 2);
+  check("an empty device does not zero the best score", fresh.bestScore === 5000);
+
+  const nothing = mergeProfiles(base(), base());
+  check("merging two empty profiles is safe",
+    nothing.history.length === 0 && nothing.xp === 0 && nothing.streak === 0);
+
+  // Daily results and streaks rebuild from the days actually played.
+  const d1 = { ...base(), dailyResults: { "2026-09-01": mkResult(1, 500, "daily"), "2026-09-02": mkResult(2, 500, "daily") } };
+  const d2 = { ...base(), dailyResults: { "2026-09-03": mkResult(3, 900, "daily"), "2026-09-02": mkResult(2, 1500, "daily") } };
+  const dm = mergeProfiles(d1, d2);
+  check("daily results merge across devices", Object.keys(dm.dailyResults).length === 3);
+  check("the better daily score wins", dm.dailyResults["2026-09-02"].score === 1500);
+  check("streak is recomputed from real days", dm.longestStreak === 3 && dm.streak === 3,
+    `longest=${dm.longestStreak} current=${dm.streak}`);
+
+  const gap = streaksFromDays(["2026-09-01", "2026-09-02", "2026-09-09"]);
+  check("a broken streak resets", gap.longest === 2 && gap.current === 1,
+    `longest=${gap.longest} current=${gap.current}`);
+  check("streaks on no days are zero", streaksFromDays([]).longest === 0);
+}
+
+console.log("\n13. Cloud is optional and fails soft");
+{
+  check("cloud is off until it is configured", cloudConfigured() === false);
+  check("both OAuth providers are offered",
+    PROVIDERS.length === 2 && PROVIDERS.some((p) => p.id === "google") && PROVIDERS.some((p) => p.id === "discord"),
+    PROVIDERS.map((p) => p.id).join(","));
+  check("nobody is signed in by default", signedIn() === false);
+  check("signIn refuses to redirect when unconfigured", signIn("google") === false);
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);

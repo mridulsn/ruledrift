@@ -2,7 +2,7 @@
 // no network at all. Bump CACHE when files change - the old cache is deleted on
 // activate, so a stale shell can never survive a deploy.
 
-const CACHE = "ruledrift-v4";
+const CACHE = "ruledrift-v5";
 
 const SHELL = [
   "./",
@@ -21,6 +21,8 @@ const SHELL = [
   "src/tutorial.js",
   "src/achievements.js",
   "src/juice.js",
+  "src/config.js",
+  "src/cloud.js",
   "assets/icon.svg",
   "assets/icon-192.png",
   "assets/icon-512.png",

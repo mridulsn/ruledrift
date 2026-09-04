@@ -551,3 +551,15 @@ ul.plainlist b{color:var(--ink)}
 .cc-sub{font-size:13.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
 @keyframes ccin{from{opacity:0;transform:translate(-50%,-40%) scale(.9)}}
 @keyframes ccout{to{opacity:0;transform:translate(-50%,-60%) scale(.97)}}
+
+/* ---------- oauth ---------- */
+.oauth{justify-content:flex-start;gap:12px;font-weight:600}
+.oa-icon{
+  width:24px;height:24px;border-radius:6px;display:grid;place-items:center;
+  font-weight:800;font-size:13px;flex:none;color:#fff;
+}
+.oauth-google .oa-icon{background:#ea4335}
+.oauth-discord .oa-icon{background:#5865f2}
+.oauth-google:hover{border-color:#ea4335}
+.oauth-discord:hover{border-color:#5865f2}
+img.pavatar{object-fit:cover}

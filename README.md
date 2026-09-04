@@ -231,10 +231,37 @@ network calls of any kind.
 - [ ] Android build via Trusted Web Activity for the Play Store
 - [ ] Export the report as a PDF
 
+## Accounts (optional)
+
+Anonymous offline play is the default and always works. Signing in with **Google
+or Discord** adds cloud backup so a record survives clearing your browser and
+follows you between devices.
+
+Two design rules make it safe:
+
+- **The device is never overwritten by the cloud, and vice versa.** Both sides
+  are merged. Signing in on a new phone cannot wipe your laptop's history, and a
+  laptop that has been offline for a week cannot erase what the phone recorded.
+- **The merge is idempotent and never sums.** XP, rule tallies and streaks are
+  recomputed from the merged history rather than added together, because
+  addition is exactly how sync bugs turn into fake scores. Syncing twice changes
+  nothing. 19 tests cover this.
+
+Sync fails soft everywhere: offline rounds are queued and sent on reconnect, a
+failed sign-in leaves you playing anonymously, and an unreachable server never
+blocks or loses a round.
+
+Backed by Supabase with Row Level Security, so a player can only ever read and
+write their own row. Setup is in [SETUP-ACCOUNTS.md](SETUP-ACCOUNTS.md); until
+it is configured, no sign-in UI appears and the game makes no network calls at
+all.
+
 ## Privacy
 
-No analytics, no accounts, no network requests. Every result is in your browser's
-localStorage and can be exported or deleted from the report screen.
+No analytics and no tracking. Signed out, every result stays in your browser's
+localStorage. Signed in, your profile is also stored in your own row in the
+database, readable by nobody else. Either way it can be exported as JSON or
+deleted from the profile screen.
 
 ## Licence
 

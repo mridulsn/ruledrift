@@ -12,6 +12,7 @@ import { sfx, isMuted, toggleMute } from "./audio.js";
 import * as juice from "./juice.js";
 import { STEPS as TUT_STEPS, GUIDE_EXAMPLES, tutorialDone, markTutorialDone, resetTutorial } from "./tutorial.js";
 import { achievementRows, rankFor, lifetimeStats, labelFor } from "./achievements.js";
+import * as cloud from "./cloud.js";
 
 const app = document.getElementById("app");
 let profile = store.load();
@@ -78,8 +79,15 @@ function stat(v, k) {
 }
 
 function footer() {
+  // Keep this honest. The moment an account exists, "nothing leaves this
+  // device" stops being true, and a privacy claim that quietly goes stale is
+  // worse than never having made one.
+  const user = cloud.currentUser();
   return h("footer", {},
-    h("div", {}, "Works offline. Nothing you play leaves this device."),
+    h("div", {},
+      user
+        ? `Playable offline. Backed up to your account (${user.email || user.name}).`
+        : "Playable offline. Nothing you play leaves this device."),
     h("div", { style: "margin-top:4px" }, "Built by Mridul"));
 }
 
@@ -104,6 +112,39 @@ function workedExample(tiles, target, captionFn, note) {
           h("div", { class: "excap" }, captionFn(t, i)),
           i === target ? h("div", { class: "exwin" }, "WINNER") : null))),
     note ? h("p", { class: "small", style: "margin-top:10px" }, note) : null);
+}
+
+// ---------------------------------------------------------------------------
+// cloud sync
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull the cloud copy, merge it with what is on this device, and push the
+ * result back. Both directions matter: signing in on a new phone must not wipe
+ * the laptop, and a laptop that has been offline for a week must not overwrite
+ * everything played since.
+ */
+async function syncNow({ quiet = true } = {}) {
+  if (!cloud.signedIn()) return false;
+  const remote = await cloud.pull();
+  if (remote) {
+    const merged = store.mergeProfiles(profile, remote);
+    profile = store.replaceLocal(merged);
+  }
+  const ok = await cloud.push(profile);
+  if (!ok) {
+    cloud.queueSync();
+    if (!quiet) toast("Saved on this device. Will sync when you're back online.");
+  } else if (!quiet) {
+    toast("Synced");
+  }
+  return ok;
+}
+
+/** Fire-and-forget sync after a run, so finishing a game is never blocked. */
+function syncInBackground() {
+  if (!cloud.signedIn()) return;
+  syncNow({ quiet: true }).catch(() => cloud.queueSync());
 }
 
 const COLOUR_WORDS = {
@@ -416,6 +457,7 @@ function screenGame() {
     result.comeback = comeback;
     const { newlyUnlocked, xpGained } = store.recordResult(profile, result);
     profile = store.load();
+    syncInBackground();
     setTimeout(() => screenResult(result, { newlyUnlocked, xpGained }), 400);
   }
 
@@ -797,9 +839,11 @@ function screenProfile() {
         h("div", { class: "tiny", style: "margin-top:5px" },
           rank.next ? `${num(rank.toNext)} XP to ${rank.next}` : "Top rank reached"))),
 
+    accountCard(),
+
     h("div", { class: "card" },
-      h("h3", {}, "Identity"),
-      h("p", { class: "small muted" }, "Stored on this device only. Used to label you in a duel comparison."),
+      h("h3", {}, "Display name"),
+      h("p", { class: "small muted" }, "Used to label you in a duel comparison."),
       nameInput,
       avatarRow,
       h("button", { class: "btn btn-sm", style: "margin-top:12px", onclick: () => {
@@ -829,7 +873,10 @@ function screenProfile() {
 
     h("div", { class: "card" },
       h("h3", {}, "Your data"),
-      h("p", { class: "small muted" }, "Everything is in this browser only. Nothing is uploaded anywhere."),
+      h("p", { class: "small muted" },
+        cloud.signedIn()
+          ? "Your history is stored in this browser and backed up to your account. Only you can read it. Deleting below clears this device; sign out first if you want to keep the cloud copy."
+          : "Everything is in this browser only. Nothing is uploaded anywhere."),
       h("div", { class: "btn-row" },
         h("button", { class: "btn btn-sm", onclick: async () => {
           toast((await copyText(store.exportProfile())) ? "Copied as JSON" : "Copy failed");
@@ -845,6 +892,58 @@ function screenProfile() {
         } }, "Delete all"))),
     footer());
   render(wrap);
+}
+
+/**
+ * The account panel. Signing in is entirely optional - the card says so plainly
+ * rather than nagging, because the game genuinely does not need it.
+ */
+function accountCard() {
+  if (!cloud.cloudConfigured()) {
+    return h("div", { class: "card" },
+      h("h3", {}, "Accounts"),
+      h("p", { class: "small muted", style: "margin-bottom:0" },
+        "Not switched on for this build. Your progress is saved on this device only - it survives closing the tab, but not clearing your browser data or moving to another device."));
+  }
+
+  const user = cloud.currentUser();
+
+  if (!user) {
+    return h("div", { class: "card" },
+      h("h3", {}, "Save your progress forever"),
+      h("p", { class: "small muted" },
+        "Right now everything is stored in this browser. Clear your browsing data and it is gone, and your phone has its own separate history. Sign in and your record is backed up and follows you to any device."),
+      h("div", { class: "stack", style: "margin-top:12px" },
+        ...cloud.PROVIDERS.map((p) =>
+          h("button", { class: `btn oauth oauth-${p.id}`, onclick: () => cloud.signIn(p.id) },
+            h("span", { class: "oa-icon" }, p.icon), p.label))),
+      h("p", { class: "tiny", style: "margin-top:12px" },
+        "Optional. The game works fully without an account, offline and forever."));
+  }
+
+  const queued = cloud.hasQueued();
+  return h("div", { class: "card" },
+    h("div", { class: "pcard" },
+      user.avatarUrl
+        ? h("img", { class: "pavatar", src: user.avatarUrl, alt: "", referrerpolicy: "no-referrer" })
+        : h("div", { class: "pavatar" }, AVATARS[profile.avatar] || AVATARS[0]),
+      h("div", { style: "flex:1;min-width:0" },
+        h("div", { style: "font-weight:700" }, user.name),
+        h("div", { class: "small muted", style: "overflow:hidden;text-overflow:ellipsis" }, user.email),
+        h("div", { class: "tiny", style: "margin-top:4px" },
+          queued ? "⚠ Changes waiting to sync" : `Backed up · signed in with ${user.provider || "OAuth"}`))),
+    h("div", { class: "btn-row", style: "margin-top:14px" },
+      h("button", { class: "btn btn-sm", onclick: async (e) => {
+        e.currentTarget.textContent = "Syncing...";
+        await syncNow({ quiet: false });
+        screenProfile();
+      } }, "Sync now"),
+      h("button", { class: "btn btn-sm", onclick: async () => {
+        if (!confirm("Sign out? Your progress stays on this device and in the cloud.")) return;
+        await cloud.signOut();
+        toast("Signed out");
+        screenProfile();
+      } }, "Sign out")));
 }
 
 // ---------------------------------------------------------------------------
@@ -979,18 +1078,53 @@ function screenStats() {
 // boot
 // ---------------------------------------------------------------------------
 
-const params = new URLSearchParams(location.search);
-const incoming = params.get("s");
-if (incoming) {
-  history.replaceState({}, "", location.pathname);
-  screenDuel(normalizeSeedCode(incoming));
-} else if (!tutorialDone() && !profile.history.length) {
-  // First ever visit goes straight into the tutorial. The single biggest cause
-  // of a bounce is a player who does not know what they are looking at.
-  screenTutorial();
-} else {
-  screenHome();
+async function boot() {
+  // An OAuth return must be handled before anything renders, so the player
+  // lands on a signed-in screen rather than seeing a flash of signed-out UI.
+  let justSignedIn = false;
+  if (cloud.cloudConfigured() && location.hash.includes("access_token")) {
+    try {
+      justSignedIn = Boolean(await cloud.consumeRedirect());
+    } catch {
+      justSignedIn = false;
+    }
+    if (justSignedIn) {
+      await syncNow({ quiet: true }).catch(() => cloud.queueSync());
+      profile = store.load();
+      // Adopt the provider's name only if the player has not chosen one.
+      const u = cloud.currentUser();
+      if (u && !profile.name) profile = store.setIdentity(profile, { name: u.name });
+      toast("Signed in - progress backed up");
+    } else {
+      toast("Sign-in failed. You can keep playing without an account.");
+    }
+  } else if (cloud.signedIn() && (cloud.hasQueued() || navigator.onLine !== false)) {
+    // Returning signed-in player: sync quietly in the background, never block.
+    syncInBackground();
+  }
+
+  const params = new URLSearchParams(location.search);
+  const incoming = params.get("s");
+  if (incoming) {
+    history.replaceState({}, "", location.pathname);
+    screenDuel(normalizeSeedCode(incoming));
+  } else if (justSignedIn) {
+    screenProfile();
+  } else if (!tutorialDone() && !profile.history.length) {
+    // First ever visit goes straight into the tutorial. The single biggest cause
+    // of a bounce is a player who does not know what they are looking at.
+    screenTutorial();
+  } else {
+    screenHome();
+  }
 }
+
+boot();
+
+// Anything that failed to reach the server gets another chance on reconnect.
+window.addEventListener("online", () => {
+  if (cloud.signedIn() && cloud.hasQueued()) syncInBackground();
+});
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => {}));

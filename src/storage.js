@@ -4,6 +4,9 @@
 
 import { unlockedSet, xpFor } from "./achievements.js";
 
+// NOTE: merge helpers below depend on daysBetween/rebuildRuleStats/tierFor,
+// all defined in this module.
+
 const KEY = "ruledrift.v2";
 const OLD_KEY = "ruledrift.v1";
 
@@ -12,6 +15,7 @@ export const AVATARS = ["\u{1F9E0}", "\u{1F441}", "\u{1F52E}", "\u{1F3AF}", "\u{
 const EMPTY = {
   name: "",
   avatar: 0,
+  updatedAt: 0,       // last local edit, used to settle merge conflicts
   xp: 0,
   unlocked: [],
   ruleStats: {},      // ruleId -> { seen, correct }
@@ -118,6 +122,7 @@ export function recordResult(profile, result) {
   }
 
   profile.tierUnlocked = Math.max(profile.tierUnlocked, tierFor(profile));
+  profile.updatedAt = Date.now();
 
   const after = unlockedSet(profile, result);
   profile.unlocked = [...after];
@@ -171,7 +176,122 @@ export function recordDuel(profile, entry) {
 export function setIdentity(profile, { name, avatar }) {
   if (typeof name === "string") profile.name = name.slice(0, 18);
   if (typeof avatar === "number") profile.avatar = avatar;
+  profile.updatedAt = Date.now();
   return save(profile);
+}
+
+// ---------------------------------------------------------------------------
+// Merging two profiles
+//
+// When someone signs in on a second device, both sides have real history and
+// neither is authoritative. The rules below are chosen so that merging is
+// SAFE rather than clever:
+//
+//   - idempotent:  merge(a, a) === a, so a repeated sync changes nothing
+//   - commutative: merge(a, b) === merge(b, a), so sync order never matters
+//   - never destructive: a session recorded on either device survives
+//   - never inflationary: totals are recomputed or max'd, never summed, so a
+//     double sync can never award XP twice
+//
+// Anything derived (XP, rule tallies, streaks) is recomputed from the merged
+// history rather than added up, because addition is exactly how sync bugs turn
+// into fake scores.
+// ---------------------------------------------------------------------------
+
+const sessionKey = (r) => `${r.playedAt}|${r.seed}|${r.score}`;
+
+function mergeHistory(a = [], b = []) {
+  const seen = new Map();
+  for (const r of [...a, ...b]) if (r && r.playedAt) seen.set(sessionKey(r), r);
+  return [...seen.values()].sort((x, y) => x.playedAt - y.playedAt).slice(-400);
+}
+
+function mergeDaily(a = {}, b = {}) {
+  const out = { ...a };
+  for (const [day, r] of Object.entries(b)) {
+    if (!out[day] || (r && r.score > out[day].score)) out[day] = r;
+  }
+  return out;
+}
+
+function mergeDuels(a = [], b = []) {
+  const seen = new Map();
+  for (const d of [...a, ...b]) if (d) seen.set(`${d.seed}|${d.at}`, d);
+  return [...seen.values()].sort((x, y) => (y.at || 0) - (x.at || 0)).slice(0, 50);
+}
+
+function maxTally(a = {}, b = {}, rebuilt = {}) {
+  // Elementwise max, never a sum: under-counting across two devices is a much
+  // smaller sin than inventing progress that was never played.
+  const out = {};
+  for (const id of new Set([...Object.keys(a), ...Object.keys(b), ...Object.keys(rebuilt)])) {
+    const s = [a[id], b[id], rebuilt[id]].filter(Boolean);
+    out[id] = {
+      seen: Math.max(0, ...s.map((x) => x.seen || 0)),
+      correct: Math.max(0, ...s.map((x) => x.correct || 0)),
+    };
+  }
+  return out;
+}
+
+/** Longest and current daily streak, recomputed from the days actually played. */
+export function streaksFromDays(days) {
+  const sorted = [...days].sort();
+  if (!sorted.length) return { longest: 0, current: 0, last: null };
+  let longest = 1, run = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = daysBetween(sorted[i - 1], sorted[i]);
+    run = gap === 1 ? run + 1 : 1;
+    longest = Math.max(longest, run);
+  }
+  return { longest, current: run, last: sorted[sorted.length - 1] };
+}
+
+export function mergeProfiles(a, b) {
+  if (!a) return b ? { ...EMPTY, ...b } : { ...EMPTY };
+  if (!b) return { ...EMPTY, ...a };
+
+  const history = mergeHistory(a.history, b.history);
+  const dailyResults = mergeDaily(a.dailyResults, b.dailyResults);
+  const streaks = streaksFromDays(Object.keys(dailyResults));
+
+  // Whichever side was edited most recently owns the cosmetic fields.
+  const newer = (b.updatedAt || 0) >= (a.updatedAt || 0) ? b : a;
+  const older = newer === b ? a : b;
+
+  const merged = {
+    ...EMPTY,
+    name: newer.name || older.name || "",
+    avatar: newer.name || newer.avatar ? newer.avatar : older.avatar,
+    history,
+    dailyResults,
+    duels: mergeDuels(a.duels, b.duels),
+    unlocked: [...new Set([...(a.unlocked || []), ...(b.unlocked || [])])],
+    ruleStats: maxTally(a.ruleStats, b.ruleStats, rebuildRuleStats(history)),
+    bestScore: Math.max(a.bestScore || 0, b.bestScore || 0, ...history.map((r) => r.score || 0)),
+    bestBrain: Math.max(a.bestBrain || 0, b.bestBrain || 0, ...history.map((r) => r.brainScore || 0)),
+    xp: Math.max(a.xp || 0, b.xp || 0, history.reduce((s, r) => s + xpFor(r), 0)),
+    longestStreak: Math.max(a.longestStreak || 0, b.longestStreak || 0, streaks.longest),
+    streak: streaks.current,
+    lastDailyDay: streaks.last,
+    freezes: Math.min(a.freezes ?? 1, b.freezes ?? 1),
+    createdAt: Math.min(a.createdAt || Date.now(), b.createdAt || Date.now()),
+    updatedAt: Math.max(a.updatedAt || 0, b.updatedAt || 0),
+  };
+
+  merged.tierUnlocked = Math.max(a.tierUnlocked || 1, b.tierUnlocked || 1, tierFor(merged));
+  merged.unlocked = [...unlockedSet(merged)];
+  return merged;
+}
+
+/** Replace the local profile wholesale, e.g. after a cloud merge. */
+export function replaceLocal(profile) {
+  return save({ ...EMPTY, ...profile });
+}
+
+export function touch(profile) {
+  profile.updatedAt = Date.now();
+  return profile;
 }
 
 export function resetAll() {
