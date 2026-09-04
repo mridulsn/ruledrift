@@ -54,11 +54,38 @@ function header(title, onBack) {
       ? h("button", { class: "icon-btn", onclick: onBack, "aria-label": "Back" }, "←")
       : h("div", { class: "brand" }, h("span", { class: "dot" }), "RULEDRIFT"),
     title ? h("h2", {}, title) : null,
+    h("div", { class: "spacer" })
+  );
+}
+
+/** The player's face in the top bar: their cloud photo if signed in, else their chosen glyph. */
+function avatarGlyph(size = 26) {
+  const user = cloud.currentUser();
+  if (user && user.avatarUrl) {
+    return h("img", {
+      src: user.avatarUrl, alt: "", referrerpolicy: "no-referrer",
+      style: `width:${size}px;height:${size}px;border-radius:8px;object-fit:cover;display:block`,
+    });
+  }
+  return h("span", {}, AVATARS[profile.avatar] || AVATARS[0]);
+}
+
+/**
+ * Home's top bar. Account and settings live here rather than buried in a menu,
+ * because "where do I log in" should never be a question.
+ */
+function topBar() {
+  const user = cloud.currentUser();
+  return h("div", { class: "top" },
+    h("div", { class: "brand" }, h("span", { class: "dot" }), "RULEDRIFT"),
     h("div", { class: "spacer" }),
-    h("button", {
-      class: "icon-btn", "aria-label": "Toggle sound",
-      onclick: (e) => { e.currentTarget.textContent = toggleMute() ? "\u{1F507}" : "\u{1F50A}"; },
-    }, isMuted() ? "\u{1F507}" : "\u{1F50A}")
+    !user && cloud.cloudConfigured()
+      ? h("button", { class: "btn btn-sm loginbtn", onclick: screenProfile }, "Log in")
+      : null,
+    h("button", { class: "icon-btn", "aria-label": "Profile", title: "Profile", onclick: screenProfile },
+      avatarGlyph()),
+    h("button", { class: "icon-btn", "aria-label": "Settings", title: "Settings", onclick: screenSettings },
+      "⚙")
   );
 }
 
@@ -167,9 +194,71 @@ function exampleFor(ruleId, salt = 1) {
 function screenHome() {
   const st = store.streakStatus(profile);
   const tier = store.tierFor(profile);
-  const dn = dailyNumber();
   const rank = rankFor(profile.xp);
-  const named = profile.name || "Player";
+  const fresh = !tutorialDone();
+
+  const wrap = h("div", { class: "stack" },
+    topBar(),
+
+    h("div", { class: "hero" },
+      h("h1", {}, "Ruledrift"),
+      h("div", { class: "tag" }, "Nobody tells you the rule. Work it out. Then it changes."),
+      h("div", { style: "margin-top:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap" },
+        h("span", { class: "streak-pill" + (st.streak > 0 ? " live" : "") },
+          st.streak > 0 ? `\u{1F525} ${st.streak}-day streak` : "\u{1F525} No streak yet"),
+        profile.history.length
+          ? h("span", { class: "streak-pill" }, `${rank.name} · ${num(profile.xp)} XP`)
+          : null)),
+
+    // The one thing this screen is for.
+    h("button", { class: "playbtn", onclick: screenPlay },
+      h("span", { class: "pb-icon" }, "▶"),
+      h("span", {}, "Play")),
+
+    // Never lose the tutorial just because home comes first now.
+    fresh
+      ? h("button", { class: "card learncard", onclick: () => { resetTutorial(); screenTutorial(); } },
+          h("span", { class: "lc-icon" }, "\u{1F393}"),
+          h("span", {},
+            h("span", { class: "lc-title" }, "New here? Learn in 60 seconds"),
+            h("span", { class: "lc-sub" }, "Five boards. It teaches itself - much easier than reading.")),
+          h("span", { class: "go" }, "›"))
+      : null,
+
+    h("div", { class: "menu" },
+      menuItem("\u{1F4D6}", "How to play", "The rules, with worked examples", screenGuide),
+      menuItem("\u{1F4CA}", "My report", profile.history.length ? "Your cognitive profile over time" : "Play once to unlock",
+        screenStats, !profile.history.length),
+      menuItem("\u{1F3C6}", "Achievements", "What you have unlocked so far", screenAchievements),
+      menuItem("\u{1F5C2}", "Rule codex", `Every rule in the game · tier ${tier} of 3`, screenCodex)),
+
+    profile.history.length
+      ? h("div", { class: "stat-grid" },
+          stat(num(profile.bestScore), "Best score"),
+          stat(profile.bestBrain || "—", "Best brain"),
+          stat(profile.history.length, "Sessions"))
+      : null,
+
+    footer());
+  render(wrap);
+}
+
+function menuItem(icon, title, sub, onclick, disabled = false) {
+  return h("button", { class: "mode", onclick, disabled },
+    h("span", { class: "ic" }, icon),
+    h("span", { class: "tx" },
+      h("span", { class: "nm" }, title),
+      h("span", { class: "bl" }, sub)),
+    h("span", { class: "go" }, "›"));
+}
+
+// ---------------------------------------------------------------------------
+// PLAY - mode picker
+// ---------------------------------------------------------------------------
+
+function screenPlay() {
+  const st = store.streakStatus(profile);
+  const dn = dailyNumber();
 
   const modeBtn = (mode, icon, onclick, hero = false) =>
     h("button", { class: "mode" + (hero ? " hero" : ""), onclick },
@@ -180,16 +269,7 @@ function screenHome() {
       h("span", { class: "go" }, "›"));
 
   const wrap = h("div", { class: "stack" },
-    header(),
-
-    h("button", { class: "card pcard", style: "width:100%;text-align:left", onclick: screenProfile },
-      h("div", { class: "pavatar" }, AVATARS[profile.avatar] || AVATARS[0]),
-      h("div", { style: "flex:1;min-width:0" },
-        h("div", { style: "font-weight:700;font-size:16px" }, named),
-        h("div", { class: "small muted" }, `${rank.name} · ${num(profile.xp)} XP`),
-        h("div", { class: "xpbar" }, h("i", { style: `width:${Math.round(rank.progress * 100)}%` }))),
-      h("span", { class: "streak-pill" + (st.streak > 0 ? " live" : "") },
-        st.streak > 0 ? `\u{1F525} ${st.streak}` : "\u{1F525} 0")),
+    header("Choose a mode", screenHome),
 
     h("div", { class: "modes" },
       st.done
@@ -203,17 +283,66 @@ function screenHome() {
       modeBtn(MODES.gauntlet, "\u{1F300}", () => startGame("gauntlet", randomSeedCode())),
       modeBtn(MODES.duel, "⚔", () => screenDuel())),
 
-    h("div", { class: "stat-grid" },
-      stat(num(profile.bestScore), "Best score"),
-      stat(profile.bestBrain || "—", "Best brain"),
-      stat(profile.history.length, "Sessions")),
+    h("p", { class: "small muted", style: "text-align:center" },
+      "Not sure? ", h("b", {}, "Quick play"), " is the normal game. There is no clock until level 10."),
 
-    h("div", { class: "btn-row" },
-      h("button", { class: "btn", onclick: screenGuide }, "How to play"),
-      h("button", { class: "btn", onclick: screenStats, disabled: !profile.history.length }, "My report")),
-    h("div", { class: "btn-row" },
-      h("button", { class: "btn", onclick: screenAchievements }, "Achievements"),
-      h("button", { class: "btn", onclick: screenCodex }, `Rule codex · ${tier}/3`)),
+    h("button", { class: "btn btn-ghost", onclick: screenGuide }, "How to play"),
+    footer());
+  render(wrap);
+}
+
+// ---------------------------------------------------------------------------
+// SETTINGS
+// ---------------------------------------------------------------------------
+
+function screenSettings() {
+  const muted = isMuted();
+
+  const wrap = h("div", { class: "stack" },
+    header("Settings", screenHome),
+
+    h("div", { class: "card" },
+      h("div", { class: "between" },
+        h("div", {},
+          h("h3", {}, "Sound"),
+          h("div", { class: "small muted" }, "Short blips on every answer")),
+        h("button", { class: "btn btn-sm", onclick: (e) => {
+          const m = toggleMute();
+          e.currentTarget.textContent = m ? "Off" : "On";
+        } }, muted ? "Off" : "On"))),
+
+    h("div", { class: "card" },
+      h("h3", {}, "Learning"),
+      h("p", { class: "small muted" }, "Run the five-board walkthrough again any time."),
+      h("div", { class: "btn-row" },
+        h("button", { class: "btn btn-sm", onclick: () => { resetTutorial(); screenTutorial(); } }, "Replay tutorial"),
+        h("button", { class: "btn btn-sm", onclick: screenGuide }, "How to play"))),
+
+    accountCard(),
+
+    h("div", { class: "card" },
+      h("h3", {}, "Your data"),
+      h("p", { class: "small muted" },
+        cloud.signedIn()
+          ? "Stored in this browser and backed up to your account. Only you can read it."
+          : "Stored in this browser only. Nothing is uploaded anywhere."),
+      h("div", { class: "btn-row" },
+        h("button", { class: "btn btn-sm", onclick: async () => {
+          toast((await copyText(store.exportProfile())) ? "Copied as JSON" : "Copy failed");
+        } }, "Export"),
+        h("button", { class: "btn btn-sm", onclick: () => {
+          if (confirm("Delete all your Ruledrift history on this device? This cannot be undone.")) {
+            profile = store.resetAll();
+            resetTutorial();
+            toast("History cleared");
+            screenHome();
+          }
+        } }, "Delete all"))),
+
+    h("div", { class: "card" },
+      h("h3", {}, "About"),
+      h("p", { class: "small muted", style: "margin-bottom:0" },
+        "Ruledrift is built on the Wisconsin Card Sorting Task, a real test of cognitive flexibility. It measures how fast you adapt - it does not claim to raise your IQ. Built by Mridul.")),
 
     footer());
   render(wrap);
@@ -871,25 +1000,7 @@ function screenProfile() {
       h("button", { class: "btn", onclick: screenAchievements }, "Achievements"),
       h("button", { class: "btn", onclick: screenStats, disabled: !profile.history.length }, "Report")),
 
-    h("div", { class: "card" },
-      h("h3", {}, "Your data"),
-      h("p", { class: "small muted" },
-        cloud.signedIn()
-          ? "Your history is stored in this browser and backed up to your account. Only you can read it. Deleting below clears this device; sign out first if you want to keep the cloud copy."
-          : "Everything is in this browser only. Nothing is uploaded anywhere."),
-      h("div", { class: "btn-row" },
-        h("button", { class: "btn btn-sm", onclick: async () => {
-          toast((await copyText(store.exportProfile())) ? "Copied as JSON" : "Copy failed");
-        } }, "Export"),
-        h("button", { class: "btn btn-sm", onclick: () => { resetTutorial(); screenTutorial(); } }, "Replay tutorial"),
-        h("button", { class: "btn btn-sm", onclick: () => {
-          if (confirm("Delete all your Ruledrift history? This cannot be undone.")) {
-            profile = store.resetAll();
-            resetTutorial();
-            toast("History cleared");
-            screenHome();
-          }
-        } }, "Delete all"))),
+    h("button", { class: "btn btn-ghost", onclick: screenSettings }, "⚙ Settings"),
     footer());
   render(wrap);
 }
@@ -1110,11 +1221,10 @@ async function boot() {
     screenDuel(normalizeSeedCode(incoming));
   } else if (justSignedIn) {
     screenProfile();
-  } else if (!tutorialDone() && !profile.history.length) {
-    // First ever visit goes straight into the tutorial. The single biggest cause
-    // of a bounce is a player who does not know what they are looking at.
-    screenTutorial();
   } else {
+    // Always land on home. A first-time player still gets the tutorial, but as
+    // an obvious invitation on the home screen rather than by being dropped
+    // into it - arriving somewhere you did not choose is its own confusion.
     screenHome();
   }
 }

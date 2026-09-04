@@ -563,3 +563,31 @@ ul.plainlist b{color:var(--ink)}
 .oauth-google:hover{border-color:#ea4335}
 .oauth-discord:hover{border-color:#5865f2}
 img.pavatar{object-fit:cover}
+
+/* ---------- home: play button + menu ---------- */
+.playbtn{
+  width:100%;display:flex;align-items:center;justify-content:center;gap:12px;
+  padding:22px;border-radius:18px;border:0;
+  background:linear-gradient(135deg,var(--accent),var(--accent-2));
+  color:#06121a;font-size:22px;font-weight:800;letter-spacing:-.01em;
+  box-shadow:0 10px 26px color-mix(in srgb,var(--accent) 26%,transparent);
+  transition:transform .09s ease,filter .15s ease;
+}
+.playbtn:hover{filter:brightness(1.06)}
+.playbtn:active{transform:scale(.985)}
+.pb-icon{font-size:17px}
+
+.learncard{
+  display:flex;align-items:center;gap:13px;width:100%;text-align:left;
+  border-color:var(--switch);
+  background:color-mix(in srgb,var(--switch) 8%,var(--bg-2));
+  margin-bottom:0;
+}
+.lc-icon{font-size:22px;flex:none}
+.lc-title{display:block;font-weight:700;font-size:14.5px}
+.lc-sub{display:block;font-size:12.5px;color:var(--ink-3);margin-top:1px}
+
+.menu{display:grid;gap:10px}
+.menu .mode:disabled{opacity:.45}
+.loginbtn{width:auto;padding:8px 14px;font-size:13.5px}
+.top .icon-btn{flex:none}
