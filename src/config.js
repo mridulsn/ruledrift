@@ -11,8 +11,9 @@
 //
 // See SETUP-ACCOUNTS.md for the ten-minute walkthrough.
 
-export const SUPABASE_URL = "";
-export const SUPABASE_ANON_KEY = "";
+export const SUPABASE_URL = "https://yvttgbuhwkjeqqvblcbc.supabase.co";
+export const SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl2dHRnYnVod2tqZXFxdmJsY2JjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1MjE3NjcsImV4cCI6MjEwNDA5Nzc2N30.klR_ZzISpcoiYdccjKwCEoeKVISupc0L4DRD8UKq_bY";
 
 /** Where the OAuth provider sends the player back to. */
 export const REDIRECT_URL =

@@ -8,7 +8,8 @@ import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
 import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
 import { mergeProfiles, streaksFromDays } from "../src/storage.js";
-import { cloudConfigured, PROVIDERS, signedIn, signIn } from "../src/cloud.js";
+import { cloudConfigured, PROVIDERS, signedIn } from "../src/cloud.js";
+import { SUPABASE_URL, SUPABASE_ANON_KEY } from "../src/config.js";
 
 let failures = 0;
 function check(name, cond, detail = "") {
@@ -398,12 +399,35 @@ console.log("\n12. Profile merge never loses or invents progress");
 
 console.log("\n13. Cloud is optional and fails soft");
 {
-  check("cloud is off until it is configured", cloudConfigured() === false);
+  // The config is either fully present or fully absent - half-configured is the
+  // state that produces confusing runtime failures.
+  const bothOrNeither =
+    (Boolean(SUPABASE_URL) && Boolean(SUPABASE_ANON_KEY)) ||
+    (!SUPABASE_URL && !SUPABASE_ANON_KEY);
+  check("cloud config is all-or-nothing", bothOrNeither,
+    `url=${Boolean(SUPABASE_URL)} key=${Boolean(SUPABASE_ANON_KEY)}`);
+  check("cloudConfigured() matches the config", cloudConfigured() === Boolean(SUPABASE_URL && SUPABASE_ANON_KEY));
+
+  if (SUPABASE_ANON_KEY) {
+    // Shipping a service_role key in client code would hand every visitor full
+    // read/write access to every player's data, bypassing RLS entirely.
+    let role = null;
+    try {
+      const body = SUPABASE_ANON_KEY.split(".")[1];
+      if (body) role = JSON.parse(Buffer.from(body, "base64url").toString()).role;
+    } catch { /* non-JWT publishable keys have no payload to read */ }
+    check("the shipped key is NOT a service_role key",
+      role !== "service_role", `role=${role}`);
+    check("the shipped key is the anon key",
+      role === "anon" || role === null || SUPABASE_ANON_KEY.startsWith("sb_publishable_"),
+      `role=${role}`);
+    check("the project URL is https", /^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(SUPABASE_URL), SUPABASE_URL);
+  }
+
   check("both OAuth providers are offered",
     PROVIDERS.length === 2 && PROVIDERS.some((p) => p.id === "google") && PROVIDERS.some((p) => p.id === "discord"),
     PROVIDERS.map((p) => p.id).join(","));
   check("nobody is signed in by default", signedIn() === false);
-  check("signIn refuses to redirect when unconfigured", signIn("google") === false);
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);
