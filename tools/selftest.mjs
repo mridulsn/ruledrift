@@ -8,7 +8,7 @@ import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
 import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
 import { mergeProfiles, streaksFromDays } from "../src/storage.js";
-import { cloudConfigured, PROVIDERS, signedIn } from "../src/cloud.js";
+import { cloudConfigured, PROVIDERS, signedIn, providerAvailability } from "../src/cloud.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "../src/config.js";
 
 let failures = 0;
@@ -428,6 +428,18 @@ console.log("\n13. Cloud is optional and fails soft");
     PROVIDERS.length === 2 && PROVIDERS.some((p) => p.id === "google") && PROVIDERS.some((p) => p.id === "discord"),
     PROVIDERS.map((p) => p.id).join(","));
   check("nobody is signed in by default", signedIn() === false);
+
+  // A button that promises a login the server will refuse is worse than no
+  // button, so availability is read from the project rather than hardcoded.
+  const live = providerAvailability({ external: { discord: true, google: false, email: true } });
+  check("an enabled provider reads as available", live.discord === true);
+  check("a provider that is off reads as unavailable", live.google === false);
+  check("availability only covers providers we actually offer",
+    Object.keys(live).sort().join(",") === "discord,google", Object.keys(live).join(","));
+  check("a missing settings payload disables everything rather than lying",
+    Object.values(providerAvailability(null)).every((v) => v === false));
+  check("an empty external map disables everything",
+    Object.values(providerAvailability({ external: {} })).every((v) => v === false));
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);

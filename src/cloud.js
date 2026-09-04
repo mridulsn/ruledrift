@@ -168,6 +168,53 @@ async function validToken() {
 }
 
 // ---------------------------------------------------------------------------
+// which providers are actually switched on
+//
+// Read from the project rather than hardcoded, so a provider that gets enabled
+// in the dashboard lights up here on its own. A button that promises a login
+// the server will refuse is worse than no button.
+// ---------------------------------------------------------------------------
+
+const PROVIDER_CACHE_KEY = "ruledrift.providers";
+
+/** Pure: turn Supabase's settings payload into {google: true, discord: false, ...} */
+export function providerAvailability(settings) {
+  const ext = (settings && settings.external) || {};
+  const out = {};
+  for (const p of PROVIDERS) out[p.id] = Boolean(ext[p.id]);
+  return out;
+}
+
+/** Last known state, or null if we have never successfully asked. */
+export function cachedProviders() {
+  try {
+    const raw = localStorage.getItem(PROVIDER_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function refreshProviders() {
+  if (!cloudConfigured()) return null;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/settings`, {
+      headers: { apikey: SUPABASE_ANON_KEY },
+    });
+    if (!res.ok) return cachedProviders();
+    const avail = providerAvailability(await res.json());
+    try {
+      localStorage.setItem(PROVIDER_CACHE_KEY, JSON.stringify(avail));
+    } catch {}
+    return avail;
+  } catch {
+    // Offline: fall back to whatever we last knew rather than greying out
+    // everything and looking broken.
+    return cachedProviders();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // profile sync
 // ---------------------------------------------------------------------------
 

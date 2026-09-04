@@ -591,3 +591,14 @@ img.pavatar{object-fit:cover}
 .menu .mode:disabled{opacity:.45}
 .loginbtn{width:auto;padding:8px 14px;font-size:13.5px}
 .top .icon-btn{flex:none}
+
+/* ---------- unavailable oauth provider ---------- */
+.oauth-off{
+  opacity:.42;cursor:default;filter:grayscale(1);
+}
+.oauth-off:hover{border-color:var(--line)}
+.oauth-off .oa-icon{background:var(--ink-3)}
+.oa-note{
+  font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:700;flex:none;
+}

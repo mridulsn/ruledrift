@@ -1006,6 +1006,43 @@ function screenProfile() {
 }
 
 /**
+ * Sign-in buttons, greyed out with a cross when that provider is not actually
+ * switched on in the project. The state is read live and cached, so enabling a
+ * provider in the dashboard lights its button up with no code change.
+ */
+function providerButtons() {
+  const known = cloud.cachedProviders();
+  const box = h("div", { class: "stack", style: "margin-top:12px" });
+
+  const paint = (avail) => {
+    box.replaceChildren(
+      ...cloud.PROVIDERS.map((p) => {
+        // Unknown (never asked, or offline) is treated as available - better to
+        // let someone try than to block a login that would have worked.
+        const off = avail ? avail[p.id] === false : false;
+        return h("button", {
+          class: `btn oauth oauth-${p.id}` + (off ? " oauth-off" : ""),
+          disabled: off,
+          title: off ? "Not set up yet" : "",
+          onclick: off ? null : () => cloud.signIn(p.id),
+        },
+          h("span", { class: "oa-icon" }, off ? "✕" : p.icon),
+          h("span", { style: "flex:1;text-align:left" }, p.label),
+          off ? h("span", { class: "oa-note" }, "Not set up yet") : null);
+      })
+    );
+  };
+
+  paint(known);
+  // Re-check in the background; if the answer changed, redraw in place.
+  cloud.refreshProviders().then((avail) => {
+    if (avail && JSON.stringify(avail) !== JSON.stringify(known)) paint(avail);
+  }).catch(() => {});
+
+  return box;
+}
+
+/**
  * The account panel. Signing in is entirely optional - the card says so plainly
  * rather than nagging, because the game genuinely does not need it.
  */
@@ -1024,10 +1061,7 @@ function accountCard() {
       h("h3", {}, "Save your progress forever"),
       h("p", { class: "small muted" },
         "Right now everything is stored in this browser. Clear your browsing data and it is gone, and your phone has its own separate history. Sign in and your record is backed up and follows you to any device."),
-      h("div", { class: "stack", style: "margin-top:12px" },
-        ...cloud.PROVIDERS.map((p) =>
-          h("button", { class: `btn oauth oauth-${p.id}`, onclick: () => cloud.signIn(p.id) },
-            h("span", { class: "oa-icon" }, p.icon), p.label))),
+      providerButtons(),
       h("p", { class: "tiny", style: "margin-top:12px" },
         "Optional. The game works fully without an account, offline and forever."));
   }
