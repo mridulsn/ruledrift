@@ -208,19 +208,87 @@ console.log("\n9b. The guide's worked examples tell the truth");
   check("the 'secret changed' example really does defeat the old rule",
     old >= 0 && old !== b.target, `old rule -> ${old}, winner is ${b.target}`);
 
-  // Every rule must be describable in plain words - no empty or jargon-only text.
+  // Two different jobs: the label is a short name you can mutter mid-game, the
+  // reveal is the full teaching text. Neither may drift into the other's job.
   const jargon = /perseverativ|latency|induction|heuristic|parity/i;
-  const bad = RULES.filter((r) => !r.reveal || r.reveal.length < 25 || jargon.test(r.reveal));
-  check("every rule has a plain-language explanation", bad.length === 0,
-    bad.map((r) => r.id).join(","));
-  check("every rule label avoids cryptic one-word names",
-    RULES.every((r) => r.label && r.label.length >= 8), RULES.filter(r=>r.label.length<8).map(r=>r.label).join(","));
+  const badReveal = RULES.filter((r) => !r.reveal || r.reveal.length < 120 || jargon.test(r.reveal));
+  check("every rule's explanation is elaborate and jargon-free", badReveal.length === 0,
+    badReveal.map((r) => `${r.id}(${(r.reveal || "").length})`).join(","));
+
+  const badLabel = RULES.filter((r) => !r.label || r.label.length > 16 || r.label.split(" ").length > 3);
+  check("every rule label stays short and punchy", badLabel.length === 0,
+    badLabel.map((r) => r.label).join(" | "));
+}
+
+console.log("\n9c. The clock stays away while you are learning");
+{
+  // The whole point: a beginner must never be rushed.
+  const early = [1, 2, 3, 5, 8, 9].map((L) => timeLimitForLevel(L, "quick"));
+  check("no clock at all before level 10", early.every((t) => t === Infinity),
+    early.join(","));
+  check("the clock appears exactly at level 10",
+    timeLimitForLevel(9, "quick") === Infinity && isFinite(timeLimitForLevel(10, "quick")));
+  check("it starts generous (20s)", timeLimitForLevel(10, "quick") === 20000,
+    String(timeLimitForLevel(10, "quick")));
+
+  // It must tighten, monotonically, and never below the floor.
+  let prev = Infinity, monotone = true, floorOk = true;
+  for (let L = 10; L <= 60; L++) {
+    const t = timeLimitForLevel(L, "quick");
+    if (t > prev) monotone = false;
+    if (t < 1700) floorOk = false;
+    prev = t;
+  }
+  check("the clock only ever tightens", monotone);
+  check("it never drops below the 1.7s floor", floorOk);
+  check("it reaches the floor eventually", timeLimitForLevel(60, "quick") === 1700);
+  check("blitz is timed from board one", isFinite(timeLimitForLevel(1, "blitz")));
+  check("zen is never timed", [1, 10, 50].every((L) => timeLimitForLevel(L, "zen") === Infinity));
+
+  // A free look on the switch board is what makes level 10 reachable at all.
+  const g = new Game({ seed: "FREE", mode: "quick", maxTier: 3 });
+  let frees = 0, n = 0;
+  while (!g.over && n++ < 400) {
+    const t = g.trial;
+    const rec = t.isSwitchTrial ? g.answer((t.target + 1) % 5, 900) : g.answer(t.target, 900);
+    if (rec.freeLook) frees++;
+  }
+  check("getting the switch board wrong costs no life", frees >= 3 && g.lives === g.maxLives,
+    `frees=${frees}, lives=${g.lives}/${g.maxLives}`);
+
+  // ...but repeating a dead rule later still does.
+  const g2 = new Game({ seed: "FREE2", mode: "quick", maxTier: 3 });
+  let m = 0;
+  while (!g2.over && m++ < 400) {
+    const t = g2.trial;
+    g2.answer(t.isSwitchTrial ? t.target : (t.target + 1) % 5, 900);
+  }
+  check("being wrong on a normal board still costs a life", g2.over && g2.lives <= 0);
+
+  // And the milestone has to actually be attainable by a strong player.
+  const reached = (() => {
+    const rng = makeRng(hashSeed("reach"));
+    let hits = 0;
+    for (let i = 0; i < 200; i++) {
+      const gg = new Game({ seed: "R" + i, mode: "quick", maxTier: 3 });
+      let known = null, k = 0;
+      while (!gg.over && k++ < 3000) {
+        const t = gg.trial;
+        gg.answer(known === t.rule && rng.next() < 0.97 ? t.target : rng.int(5), 1200);
+        known = t.rule;
+      }
+      if (gg.level >= 10) hits++;
+    }
+    return hits;
+  })();
+  check(`level 10 is reachable by a strong player (${reached}/200 runs)`, reached >= 60,
+    `only ${reached}/200`);
 }
 
 console.log("\n10. Modes behave differently");
 {
   check("zen has no clock", timeLimitForLevel(1, "zen") === Infinity);
-  check("blitz is faster than quick", timeLimitForLevel(3, "blitz") < timeLimitForLevel(3, "quick"));
+  check("blitz is timed earlier than quick", timeLimitForLevel(3, "blitz") < timeLimitForLevel(3, "quick"));
   check("zen is more forgiving", modeConfig("zen").lives > modeConfig("quick").lives);
   check("gauntlet switches every 3", modeConfig("gauntlet").runMin === 3 && modeConfig("gauntlet").runMax === 3);
 

@@ -18,59 +18,69 @@ export const TILES_PER_TRIAL = 5;
 /** Rules that need the previous target as context (memory load). */
 const NEEDS_PREV = new Set(["MATCH_LAST_COLOR", "MATCH_LAST_SHAPE", "SHARES_NOTHING"]);
 
-// Names and explanations are written for someone who has never played. No
-// jargon, no cleverness - a player who cannot say the rule out loud in plain
-// words has not really learned it.
+// Each rule carries two pieces of text with different jobs.
+//
+//   label  - a short, memorable name. This is what a player mutters to
+//            themselves mid-game ("ah, lone colour"), so it has to be quick to
+//            say and quick to recognise. Punchy beats descriptive here.
+//   reveal - the full teaching explanation, in plain words, spelled out step by
+//            step. This is where nothing is assumed and nothing is clever.
 export const RULES = [
   {
     id: "MOST_PIPS",
     tier: 1,
     label: "Most dots",
-    reveal: "Count the dots on each tile. The one with the most dots wins.",
+    reveal:
+      "Ignore the shapes and the colours completely - they are only there to distract you. Count the dots inside each of the five tiles. The tile holding the highest number of dots is the winner.",
   },
   {
     id: "FEWEST_PIPS",
     tier: 1,
     label: "Fewest dots",
-    reveal: "Count the dots on each tile. The one with the fewest dots wins.",
+    reveal:
+      "The mirror image of Most dots, and easy to mix up with it. Again ignore shape and colour and just count the dots - but this time the winner is the tile with the smallest number of them.",
   },
   {
     id: "UNIQUE_COLOR",
     tier: 1,
-    label: "The only one of its colour",
-    reveal: "Every colour appears twice, except one. That single odd colour wins.",
+    label: "Lone colour",
+    reveal:
+      "Forget dots and shapes and sort the five tiles into colour groups. Four of them pair up - two of one colour, two of another. Exactly one colour is left over with no partner. That lonely tile is the winner.",
   },
   {
     id: "UNIQUE_SHAPE",
     tier: 1,
-    label: "The only one of its shape",
-    reveal: "Every shape appears twice, except one. That single odd shape wins.",
+    label: "Lone shape",
+    reveal:
+      "The same idea as Lone colour, but using shapes. Group the five tiles by shape. Four of them form two matching pairs, and one shape appears only once. That single unpaired tile wins.",
   },
   {
     id: "ODD_PARITY",
     tier: 2,
-    label: "The odd number out",
+    label: "Odd count out",
     reveal:
-      "Four tiles have an even number of dots (2 or 4) and one has an odd number (1, 3 or 5). The odd one out wins - sometimes it is the other way round.",
+      "This one is about even and odd numbers. Usually four tiles hold an even number of dots (2 or 4) and a single tile holds an odd number (1, 3 or 5) - that odd tile wins. It can also run the other way round, with four odd tiles and one even one. Either way, the winner is the tile whose dot count does not match the pattern of the rest.",
   },
   {
     id: "MATCH_LAST_COLOR",
     tier: 2,
-    label: "Same colour as the last winner",
-    reveal: "Remember the colour of the tile that won last time. The tile with that colour wins now.",
+    label: "Echo colour",
+    reveal:
+      "The first rule that asks you to remember something. Think back to the tile that won on the previous board and recall its colour. On this board, exactly one tile carries that same colour, and it is the winner. If you were not paying attention last turn, you are guessing.",
   },
   {
     id: "MATCH_LAST_SHAPE",
     tier: 3,
-    label: "Same shape as the last winner",
-    reveal: "Remember the shape of the tile that won last time. The tile with that shape wins now.",
+    label: "Echo shape",
+    reveal:
+      "Echo colour's twin. Remember the shape of the tile that won on the previous board - circle, square, triangle, diamond or six-sided. Exactly one tile on this board repeats that shape, and it wins.",
   },
   {
     id: "SHARES_NOTHING",
     tier: 3,
-    label: "Nothing like the last winner",
+    label: "Strange one",
     reveal:
-      "Remember the tile that won last time. One tile has a different colour AND a different shape from it. That one wins.",
+      "The hardest rule in the game, because it asks you to hold two things in mind at once. Remember both the colour and the shape of the previous winner. Four of the tiles in front of you copy at least one of those two - the same colour, or the same shape. Exactly one tile matches neither. That complete stranger is the winner.",
   },
 ];
 

@@ -7,10 +7,17 @@
 import { makeRng, hashSeed } from "./rng.js";
 import { RULES, RULE_BY_ID, generateTrial, answerMap, ruleNeedsPrev, rulesUpToTier } from "./rules.js";
 
-const BASE_TIME_MS = 5200;
-const MIN_TIME_MS = 1700;
-const TIME_DECAY_PER_LEVEL = 260;
 const TRIALS_PER_LEVEL = 6;
+
+// The clock does not exist until the player has clearly understood the game.
+// Time pressure while you are still forming a hypothesis is the wrong kind of
+// difficulty - it stops being a thinking game and becomes a reaction game, and
+// a beginner learns nothing under it. So: no clock at all for the first nine
+// levels, then it arrives generously and tightens from there.
+export const TIMER_START_LEVEL = 10;
+export const TIMER_START_MS = 20000;
+const TIME_FALLOFF = 0.86;   // per level after it appears
+const MIN_TIME_MS = 1700;
 
 /**
  * Modes. Each is a different answer to "what is uncomfortable here?" - the clock,
@@ -23,16 +30,17 @@ export const MODES = {
     lives: 3, timed: true, runMin: 4, runMax: 7,
   },
   quick: {
-    id: "quick", label: "Quick play", blurb: "A fresh random board.",
+    id: "quick", label: "Quick play", blurb: "A fresh random board. No clock until level 10.",
     lives: 3, timed: true, runMin: 4, runMax: 7,
   },
   zen: {
-    id: "zen", label: "Zen", blurb: "No clock. Think as long as you like.",
+    id: "zen", label: "Zen", blurb: "No clock, ever. Think as long as you like.",
     lives: 5, timed: false, runMin: 4, runMax: 7,
   },
   blitz: {
-    id: "blitz", label: "Blitz", blurb: "Half the time. Twice the panic.",
-    lives: 3, timed: true, runMin: 4, runMax: 7, timeScale: 0.62,
+    id: "blitz", label: "Blitz", blurb: "Clock from the very first board.",
+    lives: 3, timed: true, runMin: 4, runMax: 7,
+    timerStartLevel: 1, timerStartMs: 6500,
   },
   gauntlet: {
     id: "gauntlet", label: "Gauntlet", blurb: "The rule changes every three.",
@@ -48,11 +56,27 @@ export function modeConfig(id) {
   return MODES[id] || MODES.quick;
 }
 
-export function timeLimitForLevel(level, mode = "quick") {
+/** The level at which this mode's clock first appears. */
+export function timerStartLevel(mode = "quick") {
   const cfg = modeConfig(mode);
   if (!cfg.timed) return Infinity;
-  const base = Math.max(MIN_TIME_MS, BASE_TIME_MS - (level - 1) * TIME_DECAY_PER_LEVEL);
-  return Math.round(base * (cfg.timeScale || 1));
+  return cfg.timerStartLevel || TIMER_START_LEVEL;
+}
+
+/**
+ * Infinity means "no clock on this board".
+ *
+ * Once the clock does arrive it starts at a deliberately generous 20 seconds and
+ * then falls off proportionally, so it tightens quickly enough to stay exciting
+ * without ever snapping from comfortable to impossible.
+ */
+export function timeLimitForLevel(level, mode = "quick") {
+  const cfg = modeConfig(mode);
+  const start = timerStartLevel(mode);
+  if (!isFinite(start) || level < start) return Infinity;
+  const startMs = cfg.timerStartMs || TIMER_START_MS;
+  const ms = startMs * Math.pow(TIME_FALLOFF, level - start);
+  return Math.round(Math.max(MIN_TIME_MS, ms));
 }
 
 export class Game {
@@ -99,8 +123,15 @@ export class Game {
     return timeLimitForLevel(this.level, this.mode);
   }
 
+  /** Whether THIS board has a clock - it depends on the level, not just the mode. */
   get timed() {
-    return this.cfg.timed;
+    return isFinite(this.timeLimitMs);
+  }
+
+  /** True on the board where the clock first appears, so the UI can announce it. */
+  get clockJustStarted() {
+    return this.timed && this.level === timerStartLevel(this.mode) &&
+      this.correctCount % TRIALS_PER_LEVEL === 0;
   }
 
   _eligibleRules() {
@@ -159,6 +190,13 @@ export class Game {
       t.answers[this.previousRule] === index &&
       t.answers[this.previousRule] >= 0;
 
+    // You cannot possibly know a rule you have never seen, so the very first
+    // board after a silent change is a free look: it breaks your streak and it
+    // still counts in your adaptation score, but it does not cost a life.
+    // Without this, every rule change costs a life, three lives cap a run at
+    // roughly level 3, and everything built for later levels is dead content.
+    const freeLook = !correct && t.isSwitchTrial && !timedOut;
+
     let gained = 0;
     if (correct) {
       const limit = this.timed ? this.timeLimitMs : 6000;
@@ -178,10 +216,11 @@ export class Game {
       this.prevTarget = { ...t.tiles[t.target] };
     } else {
       this.streak = 0;
-      this.lives--;
+      if (!freeLook) this.lives--;
     }
 
     this.trials.push({
+      freeLook,
       n: this.trials.length + 1,
       rule: t.rule,
       previousRule: this.previousRule,

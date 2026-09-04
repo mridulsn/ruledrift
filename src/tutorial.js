@@ -78,7 +78,7 @@ export const STEPS = [
     target: 1,
     success: "That is it. You know how to play.",
     teach:
-      "That is everything. In a real game the secret keeps changing every few turns, a clock counts down on each tile, and three mistakes end the round. Nothing else is different.",
+      "That is everything. In a real game the secret keeps changing every few turns and three mistakes end the round - but the board straight after a change is always free, and there is no clock at all until level 10. Take as long as you like.",
     fail: "Which colour appears only ONCE? Two purple, two orange... and one more.",
   },
 ];

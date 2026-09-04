@@ -533,3 +533,21 @@ ul.plainlist b{color:var(--ink)}
 .rulerow:last-child{border-bottom:0}
 .rulerow b{font-size:14px}
 .rulerow .small{margin-top:2px}
+
+/* ---------- clock slot ---------- */
+.clockslot{margin-bottom:18px;min-height:22px}
+.noclock{
+  text-align:center;font-size:12px;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--ink-3);padding:4px 0;
+}
+.clockcut{
+  position:fixed;left:50%;top:38%;transform:translate(-50%,-50%);
+  background:var(--bg-2);border:1px solid var(--switch);
+  border-radius:16px;padding:20px 26px;text-align:center;z-index:70;
+  box-shadow:var(--shadow);animation:ccin .35s ease-out, ccout .4s ease-in 2.2s forwards;
+  max-width:min(92vw,380px);
+}
+.cc-title{font-size:19px;font-weight:900;letter-spacing:-.02em;color:var(--switch)}
+.cc-sub{font-size:13.5px;color:var(--ink-2);margin-top:6px;line-height:1.5}
+@keyframes ccin{from{opacity:0;transform:translate(-50%,-40%) scale(.9)}}
+@keyframes ccout{to{opacity:0;transform:translate(-50%,-60%) scale(.97)}}

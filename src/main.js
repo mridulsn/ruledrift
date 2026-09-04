@@ -289,6 +289,9 @@ function screenGame() {
   const board = h("div", { class: "board" });
   const feed = h("div", { class: "feedline" }, "");
 
+  const noClock = h("div", { class: "noclock" }, "No clock — take your time");
+  const clockSlot = h("div", { class: "clockslot" }, noClock);
+
   const wrap = h("div", { class: "stack" },
     h("div", { class: "top" },
       h("button", { class: "icon-btn", "aria-label": "Quit",
@@ -296,7 +299,7 @@ function screenGame() {
       h("div", {}, scoreEl, metaEl),
       h("div", { class: "spacer" }),
       livesEl),
-    cfg.timed ? bar : h("div", { style: "height:6px;margin-bottom:18px" }),
+    clockSlot,
     board,
     feed);
   render(wrap);
@@ -306,6 +309,7 @@ function screenGame() {
   const hintsOn = profile.history.length < 2;
   let consecutiveWrong = 0;
   let comeback = false;
+  let clockAnnounced = false;
 
   function paintHud() {
     scoreEl.textContent = num(game.score);
@@ -313,6 +317,29 @@ function screenGame() {
     livesEl.replaceChildren(
       ...Array.from({ length: game.maxLives }, (_, k) =>
         h("span", { class: "life" + (k < game.maxLives - game.lives ? " lost" : "") })));
+
+    // The clock arrives partway through a run, so this has to be re-checked
+    // every board rather than decided once from the mode.
+    if (game.timed) {
+      if (clockSlot.firstChild !== bar) clockSlot.replaceChildren(bar);
+      if (!clockAnnounced) {
+        clockAnnounced = true;
+        announceClock();
+      }
+    } else if (clockSlot.firstChild !== noClock) {
+      clockSlot.replaceChildren(noClock);
+    }
+  }
+
+  /** The clock showing up is a real moment - mark it. */
+  function announceClock() {
+    const secs = Math.round(game.timeLimitMs / 1000);
+    const banner = h("div", { class: "clockcut" },
+      h("div", { class: "cc-title" }, "⏱ THE CLOCK STARTS"),
+      h("div", { class: "cc-sub" }, `You have ${secs} seconds a board from here. It gets shorter each level.`));
+    document.body.appendChild(banner);
+    sfx.adapt();
+    setTimeout(() => banner.remove(), 2600);
   }
 
   function paintBoard() {
@@ -365,10 +392,12 @@ function screenGame() {
       sfx.wrong();
       juice.punish(index >= 0 ? nodes[index] : null, board);
       consecutiveWrong++;
-      feed.className = "feedline bad";
-      feed.textContent = rec.perseverative
-        ? "That was the old rule."
-        : rec.timedOut ? "Too slow." : "Not that one.";
+      feed.className = rec.freeLook ? "feedline hint" : "feedline bad";
+      feed.textContent = rec.freeLook
+        ? "The rule just changed — that one was free. Look at the answer."
+        : rec.perseverative
+          ? "That was the old rule."
+          : rec.timedOut ? "Too slow." : "Not that one.";
       // Onboarding only: the silence is the game, but a brand-new player who is
       // drowning gets one nudge so they learn that rules change at all.
       if (hintsOn && consecutiveWrong >= 2) {
@@ -402,7 +431,7 @@ function screenGame() {
 
   function loop() {
     if (!game || game.over) return;
-    if (!locked && cfg.timed) {
+    if (!locked && game.timed) {
       const elapsed = performance.now() - trialStart;
       const frac = Math.max(0, 1 - elapsed / game.timeLimitMs);
       barFill.style.transform = `scaleX(${frac})`;
@@ -606,12 +635,24 @@ function screenGuide() {
         h("b", {}, "This is the whole game."), " Nothing warns you that the secret changed. You find out because your answer suddenly turns red. When that happens, stop using your old idea and look for a new one.")),
 
     h("div", { class: "card" },
+      h("h3", {}, "There is no clock while you are learning"),
+      h("p", { class: "small" },
+        "For the first nine levels nothing is timing you. Sit and stare at a board for a minute if you want to — working out the secret is the whole point, and rushing that would only teach you to panic."),
+      h("p", { class: "small" },
+        "From ", h("b", {}, "level 10"), " a clock appears, and it announces itself when it does. It starts at a very generous ",
+        h("b", {}, "20 seconds"), " a board, then gets a little shorter each level after that, down to a minimum of under two seconds a long way later."),
+      h("p", { class: "small", style: "margin-bottom:0" },
+        "If you never want a clock at all, play ", h("b", {}, "Zen"), ". If you want one from the very first board, play ", h("b", {}, "Blitz"), ".")),
+
+    h("div", { class: "card" },
       h("h3", {}, "How a round ends"),
       h("ul", { class: "plainlist" },
         h("li", {}, h("b", {}, "Three mistakes and the round is over."), " The dots at the top right show how many you have left."),
-        h("li", {}, h("b", {}, "There is a clock."), " The bar under your score empties as you think. If it runs out, that counts as a mistake."),
-        h("li", {}, h("b", {}, "It gets faster."), " Every level the clock gives you a little less time."),
-        h("li", {}, "Want no clock at all? Play ", h("b", {}, "Zen"), " mode. Nothing rushes you."))),
+        h("li", {}, h("b", {}, "The board right after the secret changes is free."),
+          " You could not possibly have known the new secret, so getting that one wrong costs you nothing. Look carefully at which tile lights up green — that is your clue."),
+        h("li", {}, h("b", {}, "Repeating a dead idea does cost you."),
+          " Once you have been shown the change, sticking with the old secret is a real mistake."),
+        h("li", {}, "A level is six correct answers, so the clock at level 10 means about ", h("b", {}, "54 right"), " in one round. It is meant to be a milestone."))),
 
     h("div", { class: "card" },
       h("h3", {}, "Controls"),

@@ -117,10 +117,32 @@ invariant broke, the tutorial would quietly stop teaching anything.
 |---|---|
 | **Daily** | One board a day, seeded from the date - identical for everyone |
 | **Quick** | A fresh random board |
-| **Zen** | No clock at all, five lives. For thinking rather than reacting |
-| **Blitz** | 62% of the normal time |
+| **Zen** | No clock ever, five lives. For thinking rather than reacting |
+| **Blitz** | Clock from the very first board, starting at 6.5s |
 | **Gauntlet** | The rule changes every three correct answers |
 | **Duel** | The exact board a friend played |
+
+## The clock arrives late, on purpose
+
+Time pressure while you are still forming a hypothesis is the wrong kind of
+difficulty. It converts a thinking game into a reaction game, and a beginner
+learns nothing under it - they learn to panic. So there is **no clock at all for
+the first nine levels**. At level 10 it appears, announces itself, and starts at
+a generous **20 seconds** a board, falling off proportionally to a floor of 1.7s.
+
+Building that exposed a real bug in the design. A simulation of 1,200 runs showed
+that **even a perfect player never reached level 10** - median level 1, best 5 -
+so a level-10 clock would have been dead content.
+
+The cause: every silent rule change cost a life, because the first board after a
+change is genuinely unguessable. Three lives meant roughly three rule changes.
+The fix is also the fairer rule: **the first board after a change is a free
+look.** It breaks your streak and still counts in your adaptation score, but it
+does not cost a life. Repeating a rule that has already been shown to be dead
+still does.
+
+A strong player now reaches level 10 in about 70% of runs and a beginner
+essentially never meets the clock, which is exactly the intent.
 
 ## Progression
 
