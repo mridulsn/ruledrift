@@ -6,7 +6,7 @@ A brain game that runs entirely in the browser, works with the network switched
 off, and lets you duel a friend on a byte-identical board with no server and no
 account.
 
-Play: *(link added after deploy)*
+**Play: https://mridulsn.github.io/ruledrift/**
 
 ---
 
