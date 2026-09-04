@@ -343,11 +343,11 @@ export const DOMAIN_LABELS = {
 };
 
 export const DOMAIN_BLURBS = {
-  speed: "How quickly you commit to an answer you believe in.",
-  flexibility: "Trials needed to lock on to a rule after it silently changes.",
-  inhibition: "How well you stop applying a rule once it stops working.",
-  induction: "How fast you form a correct new hypothesis from thin evidence.",
-  consistency: "How steady your response time is. Erratic timing means divided attention.",
+  speed: "How fast you tap once you think you know the answer.",
+  flexibility: "How many turns it takes you to find the new secret after it changes.",
+  inhibition: "How quickly you stop using an old idea once it has started failing.",
+  induction: "How good you are at working out a new secret from only one or two clues.",
+  consistency: "How even your timing is. Very up-and-down timing usually means you were distracted.",
 };
 
 export { RULES, RULE_BY_ID };

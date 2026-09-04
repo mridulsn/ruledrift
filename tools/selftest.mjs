@@ -4,7 +4,7 @@
 import { Game } from "../src/engine.js";
 import { generateTrial, evaluateRule, RULES, rulesUpToTier, ruleNeedsPrev } from "../src/rules.js";
 import { makeRng, hashSeed, randomSeedCode, dailySeedCode } from "../src/rng.js";
-import { STEPS as TUT } from "../src/tutorial.js";
+import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
 import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
 
@@ -192,6 +192,29 @@ console.log("\n9. Tutorial boards are exactly what they claim");
     `old rule -> ${oldRuleSays}, correct is ${sw.target}`);
   check("every tutorial step has prompt, success, teach and fail text",
     TUT.every((s) => s.prompt && s.success && s.teach && s.fail));
+}
+
+console.log("\n9b. The guide's worked examples tell the truth");
+{
+  for (const [name, ex] of Object.entries(GUIDE_EXAMPLES)) {
+    const got = evaluateRule(ex.rule, ex.tiles, null);
+    check(`guide example "${name}" really is won by ${ex.rule}`, got === ex.target,
+      `rule picks ${got}, guide labels ${ex.target}`);
+    check(`guide example "${name}" has 5 tiles`, ex.tiles.length === 5);
+  }
+  // The second example is only instructive if the old rule points elsewhere.
+  const b = GUIDE_EXAMPLES.uniqueColour;
+  const old = evaluateRule(b.oldRule, b.tiles, null);
+  check("the 'secret changed' example really does defeat the old rule",
+    old >= 0 && old !== b.target, `old rule -> ${old}, winner is ${b.target}`);
+
+  // Every rule must be describable in plain words - no empty or jargon-only text.
+  const jargon = /perseverativ|latency|induction|heuristic|parity/i;
+  const bad = RULES.filter((r) => !r.reveal || r.reveal.length < 25 || jargon.test(r.reveal));
+  check("every rule has a plain-language explanation", bad.length === 0,
+    bad.map((r) => r.id).join(","));
+  check("every rule label avoids cryptic one-word names",
+    RULES.every((r) => r.label && r.label.length >= 8), RULES.filter(r=>r.label.length<8).map(r=>r.label).join(","));
 }
 
 console.log("\n10. Modes behave differently");

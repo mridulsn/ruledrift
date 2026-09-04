@@ -18,54 +18,59 @@ export const TILES_PER_TRIAL = 5;
 /** Rules that need the previous target as context (memory load). */
 const NEEDS_PREV = new Set(["MATCH_LAST_COLOR", "MATCH_LAST_SHAPE", "SHARES_NOTHING"]);
 
+// Names and explanations are written for someone who has never played. No
+// jargon, no cleverness - a player who cannot say the rule out loud in plain
+// words has not really learned it.
 export const RULES = [
   {
     id: "MOST_PIPS",
     tier: 1,
     label: "Most dots",
-    reveal: "The tile with the most dots.",
+    reveal: "Count the dots on each tile. The one with the most dots wins.",
   },
   {
     id: "FEWEST_PIPS",
     tier: 1,
     label: "Fewest dots",
-    reveal: "The tile with the fewest dots.",
+    reveal: "Count the dots on each tile. The one with the fewest dots wins.",
   },
   {
     id: "UNIQUE_COLOR",
     tier: 1,
-    label: "Lone colour",
-    reveal: "The only tile of its colour.",
+    label: "The only one of its colour",
+    reveal: "Every colour appears twice, except one. That single odd colour wins.",
   },
   {
     id: "UNIQUE_SHAPE",
     tier: 1,
-    label: "Lone shape",
-    reveal: "The only tile of its shape.",
+    label: "The only one of its shape",
+    reveal: "Every shape appears twice, except one. That single odd shape wins.",
   },
   {
     id: "ODD_PARITY",
     tier: 2,
-    label: "Odd count out",
-    reveal: "The only tile with an odd dot-count when the rest are even, or the reverse.",
+    label: "The odd number out",
+    reveal:
+      "Four tiles have an even number of dots (2 or 4) and one has an odd number (1, 3 or 5). The odd one out wins - sometimes it is the other way round.",
   },
   {
     id: "MATCH_LAST_COLOR",
     tier: 2,
-    label: "Echo colour",
-    reveal: "The tile matching the colour of the previous correct tile.",
+    label: "Same colour as the last winner",
+    reveal: "Remember the colour of the tile that won last time. The tile with that colour wins now.",
   },
   {
     id: "MATCH_LAST_SHAPE",
     tier: 3,
-    label: "Echo shape",
-    reveal: "The tile matching the shape of the previous correct tile.",
+    label: "Same shape as the last winner",
+    reveal: "Remember the shape of the tile that won last time. The tile with that shape wins now.",
   },
   {
     id: "SHARES_NOTHING",
     tier: 3,
-    label: "Stranger",
-    reveal: "The tile sharing no colour and no shape with the previous correct tile.",
+    label: "Nothing like the last winner",
+    reveal:
+      "Remember the tile that won last time. One tile has a different colour AND a different shape from it. That one wins.",
   },
 ];
 

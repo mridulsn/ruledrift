@@ -504,3 +504,32 @@ footer a { color: var(--ink-3); }
 .tut-progress{display:flex;gap:5px;margin-bottom:14px}
 .tut-progress i{flex:1;height:4px;border-radius:2px;background:var(--bg-3)}
 .tut-progress i.on{background:var(--accent)}
+
+/* ---------- worked examples in the guide ---------- */
+.exboard{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:12px}
+.extile{
+  background:var(--bg-3);border:1.5px solid var(--line);border-radius:11px;
+  padding:7px 4px 6px;text-align:center;position:relative;
+}
+.extile.win{border-color:var(--good);background:color-mix(in srgb,var(--good) 15%,var(--bg-3))}
+.exart{display:grid;place-items:center}
+.exart svg{width:100%;height:auto;max-width:54px}
+.excap{font-size:10.5px;color:var(--ink-2);margin-top:4px;line-height:1.25;font-weight:600}
+.exwin{font-size:8.5px;letter-spacing:.06em;color:var(--good);font-weight:800;margin-top:3px}
+@media (max-width:430px){
+  .excap{font-size:9.5px}
+  .exwin{font-size:7.5px}
+}
+
+.threeup{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px;text-align:center}
+.threeup b{font-size:13.5px;display:block;margin-top:6px}
+.tu-art{display:grid;place-items:center;height:52px}
+
+ul.plainlist{margin:8px 0 0;padding-left:20px;color:var(--ink-2);font-size:14px;line-height:1.6}
+ul.plainlist li{margin-bottom:7px}
+ul.plainlist b{color:var(--ink)}
+
+.rulerow{padding:11px 0;border-bottom:1px solid var(--line)}
+.rulerow:last-child{border-bottom:0}
+.rulerow b{font-size:14px}
+.rulerow .small{margin-top:2px}

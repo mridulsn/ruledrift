@@ -10,7 +10,7 @@ import { lineChart, radarChart, streakCalendar, ruleBars } from "./charts.js";
 import { buildShareText, decodePayload, compare, copyText, challengeUrl, resultStrip } from "./share.js";
 import { sfx, isMuted, toggleMute } from "./audio.js";
 import * as juice from "./juice.js";
-import { STEPS as TUT_STEPS, tutorialDone, markTutorialDone, resetTutorial } from "./tutorial.js";
+import { STEPS as TUT_STEPS, GUIDE_EXAMPLES, tutorialDone, markTutorialDone, resetTutorial } from "./tutorial.js";
 import { achievementRows, rankFor, lifetimeStats, labelFor } from "./achievements.js";
 
 const app = document.getElementById("app");
@@ -89,6 +89,27 @@ function miniBoard(tiles, target) {
     ...tiles.map((t, i) =>
       h("div", { class: "mt" + (i === target ? " hit" : "") }, tileSvg(t, { size: 28 }))));
 }
+
+/**
+ * A worked example: a full-size board with a caption under every tile and the
+ * winner marked. Someone who cannot follow the prose can still read the answer
+ * straight off the picture.
+ */
+function workedExample(tiles, target, captionFn, note) {
+  return h("div", {},
+    h("div", { class: "exboard" },
+      ...tiles.map((t, i) =>
+        h("div", { class: "extile" + (i === target ? " win" : "") },
+          h("div", { class: "exart" }, tileSvg(t, { size: 54 })),
+          h("div", { class: "excap" }, captionFn(t, i)),
+          i === target ? h("div", { class: "exwin" }, "WINNER") : null))),
+    note ? h("p", { class: "small", style: "margin-top:10px" }, note) : null);
+}
+
+const COLOUR_WORDS = {
+  cyan: "blue", amber: "orange", magenta: "pink", lime: "green", violet: "purple",
+};
+const plainColour = (c) => COLOUR_WORDS[c] || c;
 
 /** A deterministic example board for a rule, so the guide always looks the same. */
 function exampleFor(ruleId, salt = 1) {
@@ -533,57 +554,76 @@ function compareTable(c, them) {
 // ---------------------------------------------------------------------------
 
 function screenGuide() {
-  const ex1 = exampleFor("MOST_PIPS", 3);
-  const ex2 = exampleFor("UNIQUE_COLOR", 5);
+  // Boards come from tutorial.js so the test suite can verify the captions.
+  const boardA = GUIDE_EXAMPLES.mostDots.tiles;
+  const boardB = GUIDE_EXAMPLES.uniqueColour.tiles;
 
   const wrap = h("div", { class: "stack" },
     header("How to play", screenHome),
 
     h("div", { class: "card" },
-      h("p", { style: "font-size:16px;color:var(--ink)" },
-        "One sentence: ", h("b", {}, "a hidden rule decides which tile is correct, and it changes without telling you.")),
-      h("button", { class: "btn btn-primary", style: "margin-top:8px", onclick: () => { resetTutorial(); screenTutorial(); } },
-        "▶ Learn by playing (60 seconds)"),
-      h("p", { class: "small muted", style: "margin:10px 0 0" },
-        "Honestly - do this instead of reading. It teaches the whole game in five boards.")),
+      h("h3", { style: "font-size:18px" }, "The game keeps a secret"),
+      h("p", {},
+        "Five tiles show up. ", h("b", {}, "One of them is the winner."), " The game knows why, but it will not tell you."),
+      h("p", {},
+        "You tap a tile to guess. It turns ", h("b", { style: "color:var(--good)" }, "green"),
+        " if you were right and ", h("b", { style: "color:var(--bad)" }, "red"), " if you were wrong."),
+      h("p", { style: "margin-bottom:0" },
+        "By guessing a few times you work out the secret. ",
+        h("b", {}, "Then the game quietly changes it"), " and you have to work out the new one.")),
 
     h("div", { class: "card" },
-      h("div", { class: "guide-step" },
-        h("div", { class: "n" }, "1"),
-        h("div", { class: "bd" },
-          h("h3", {}, "Five tiles appear"),
-          h("p", { class: "small" }, "Each has three things about it: a shape, a colour, and a number of dots. One tile is correct."),
-          miniBoard(ex1.tiles, -1))),
+      h("button", { class: "btn btn-primary", onclick: () => { resetTutorial(); screenTutorial(); } },
+        "▶ Show me - 60 seconds"),
+      h("p", { class: "small muted", style: "margin:10px 0 0" },
+        "This is much easier than reading. It walks you through five boards and you learn it by playing.")),
 
-      h("div", { class: "guide-step" },
-        h("div", { class: "n" }, "2"),
-        h("div", { class: "bd" },
-          h("h3", {}, "Tap one and read the answer"),
-          h("p", { class: "small" }, "Green means correct, red means wrong. You are never told the rule - the feedback is your only evidence. Here the rule was ", h("b", {}, "most dots"), "."),
-          miniBoard(ex1.tiles, ex1.target))),
+    h("div", { class: "card" },
+      h("h3", {}, "Every tile has three things"),
+      h("p", { class: "small" }, "That is all a tile is. Any one of the three can be the secret."),
+      h("div", { class: "threeup" },
+        h("div", {}, h("div", { class: "tu-art" }, tileSvg({ shape: "hex", color: "lime", count: 4 }, { size: 46 })),
+          h("b", {}, "Shape"), h("div", { class: "small muted" }, "circle, square, triangle, diamond, six-sided")),
+        h("div", {}, h("div", { class: "tu-art" }, tileSvg({ shape: "circle", color: "magenta", count: 3 }, { size: 46 })),
+          h("b", {}, "Colour"), h("div", { class: "small muted" }, "blue, orange, pink, green, purple")),
+        h("div", {}, h("div", { class: "tu-art" }, tileSvg({ shape: "square", color: "cyan", count: 2 }, { size: 46 })),
+          h("b", {}, "Dots"), h("div", { class: "small muted" }, "one to five dots inside the shape")))),
 
-      h("div", { class: "guide-step" },
-        h("div", { class: "n" }, "3"),
-        h("div", { class: "bd" },
-          h("h3", {}, "The rule changes silently"),
-          h("p", { class: "small" }, "After a few correct answers the rule swaps. Nothing announces it. Suddenly the tile with the most dots is wrong, and here the answer is ", h("b", {}, "the only tile of its colour"), "."),
-          miniBoard(ex2.tiles, ex2.target))),
+    h("div", { class: "card" },
+      h("h3", {}, "Worked example 1 - the secret is “most dots”"),
+      h("p", { class: "small" }, "Ignore the shapes and colours completely. Just count the dots on each tile:"),
+      workedExample(boardA, GUIDE_EXAMPLES.mostDots.target, (t) => `${t.count} dot${t.count === 1 ? "" : "s"}`,
+        "4 is the biggest number, so the green six-sided tile wins. If you tapped it, it turns green.")),
 
-      h("div", { class: "guide-step" },
-        h("div", { class: "n" }, "4"),
-        h("div", { class: "bd" },
-          h("h3", {}, "Notice fast, drop the old rule"),
-          h("p", { class: "small" }, "That is the actual skill. Sticking with a rule that has stopped working is called a ", h("b", {}, "perseverative error"), ", and the game counts them."))),
+    h("div", { class: "card" },
+      h("h3", {}, "Worked example 2 - the secret has changed"),
+      h("p", { class: "small" },
+        "Now the same game gives you this board. If you still count dots you would tap the first tile, because it has 5. ",
+        h("b", {}, "It turns red."), " The secret is not about dots any more. Look at the colours instead:"),
+      workedExample(boardB, GUIDE_EXAMPLES.uniqueColour.target, (t) => plainColour(t.color),
+        "Two blue, two orange - and one green sitting on its own. The lonely colour wins."),
+      h("p", { class: "small", style: "margin-top:10px" },
+        h("b", {}, "This is the whole game."), " Nothing warns you that the secret changed. You find out because your answer suddenly turns red. When that happens, stop using your old idea and look for a new one.")),
 
-      h("div", { class: "guide-step" },
-        h("div", { class: "n" }, "5"),
-        h("div", { class: "bd" },
-          h("h3", {}, "Three mistakes end the run"),
-          h("p", { class: "small" }, "A clock runs on each board and speeds up every level. Running out of time counts as a mistake. Zen mode removes the clock entirely.")))),
+    h("div", { class: "card" },
+      h("h3", {}, "How a round ends"),
+      h("ul", { class: "plainlist" },
+        h("li", {}, h("b", {}, "Three mistakes and the round is over."), " The dots at the top right show how many you have left."),
+        h("li", {}, h("b", {}, "There is a clock."), " The bar under your score empties as you think. If it runs out, that counts as a mistake."),
+        h("li", {}, h("b", {}, "It gets faster."), " Every level the clock gives you a little less time."),
+        h("li", {}, "Want no clock at all? Play ", h("b", {}, "Zen"), " mode. Nothing rushes you."))),
 
     h("div", { class: "card" },
       h("h3", {}, "Controls"),
-      h("p", { class: "small" }, "Tap a tile, or press ", h("b", {}, "1-5"), " on a keyboard. ", h("b", {}, "Esc"), " quits a run.")),
+      h("p", { class: "small" }, "Tap a tile with your finger or mouse. On a keyboard, press ", h("b", {}, "1"), " to ", h("b", {}, "5"), " to pick a tile, and ", h("b", {}, "Esc"), " to quit a round.")),
+
+    h("div", { class: "card" },
+      h("h3", {}, "All the secrets it can use"),
+      h("p", { class: "small" }, "There are eight. You start with four, and the rest arrive as you play."),
+      ...RULES.map((r) =>
+        h("div", { class: "rulerow" },
+          h("b", {}, r.label),
+          h("div", { class: "small muted" }, r.reveal)))),
 
     h("div", { class: "card" },
       h("h3", {}, "The five scores"),
