@@ -461,6 +461,13 @@ export function providerAvailability(settings) {
   const ext = (settings && settings.external) || {};
   const out = {};
   for (const p of PROVIDERS) out[p.id] = Boolean(ext[p.id]);
+
+  // Discord no longer signs in through Supabase's provider - it runs through
+  // our own /api/discord/callback - so Supabase's toggle no longer describes
+  // whether it works. The secret still sitting in that provider is stale, and
+  // switching the provider off (a reasonable tidy-up) would grey out a button
+  // that works perfectly. What Discord sign-in actually needs is the client ID.
+  out.discord = Boolean(DISCORD_CLIENT_ID);
   return out;
 }
 

@@ -443,6 +443,11 @@ console.log("\n13. Cloud is optional and fails soft");
   const live = providerAvailability({ external: { discord: true, google: false, email: true } });
   check("an enabled provider reads as available", live.discord === true);
   check("a provider that is off reads as unavailable", live.google === false);
+
+  // Discord is deliberately exempt: it signs in through our own callback, so
+  // Supabase's provider toggle no longer describes whether it works.
+  check("Discord stays available even if Supabase's provider is switched off",
+    providerAvailability({ external: { discord: false } }).discord === Boolean(DISCORD_CLIENT_ID));
   check("availability only covers providers we actually offer",
     Object.keys(live).sort().join(",") === "discord,google", Object.keys(live).join(","));
   // The bug this replaces: a failed read and an empty cloud both returned null,
@@ -472,10 +477,11 @@ console.log("\n13. Cloud is optional and fails soft");
     GOOGLE_CLIENT_ID === "" || /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(GOOGLE_CLIENT_ID),
     GOOGLE_CLIENT_ID || "(unset)");
 
-  check("a missing settings payload disables everything rather than lying",
-    Object.values(providerAvailability(null)).every((v) => v === false));
-  check("an empty external map disables everything",
-    Object.values(providerAvailability({ external: {} })).every((v) => v === false));
+  // Everything that DOES depend on the Supabase payload must still fail closed.
+  check("a missing settings payload disables the Supabase-backed providers",
+    providerAvailability(null).google === false);
+  check("an empty external map disables the Supabase-backed providers",
+    providerAvailability({ external: {} }).google === false);
 
   // -------------------------------------------------------------------------
   // Discord sign-in runs on our own domain
