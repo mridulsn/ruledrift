@@ -24,6 +24,16 @@ export const SUPABASE_ANON_KEY =
 export const GOOGLE_CLIENT_ID =
   "45031354820-9t0la84m9fjng5vsrn6svj35o72b92rh.apps.googleusercontent.com";
 
+// Discord's public OAuth client ID. Safe to commit for the same reason as
+// Google's - it names the app, it authorises nothing. The matching *secret*
+// lives only in the DISCORD_CLIENT_SECRET environment variable on the server.
+//
+// This exists so Discord sign-in can start from this domain, which is what makes
+// Discord's consent screen say "you will be redirected outside of Discord to
+// https://ruledrift.vercel.app" instead of naming the Supabase project. See
+// api/discord/callback.js for why that has to be done by hand.
+export const DISCORD_CLIENT_ID = "1545474193758621776";
+
 /** Where the OAuth provider sends the player back to. */
 export const REDIRECT_URL =
   typeof location !== "undefined" ? location.origin + location.pathname : "";

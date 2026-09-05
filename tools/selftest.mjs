@@ -8,7 +8,16 @@ import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
 import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
 import { mergeProfiles, streaksFromDays } from "../src/storage.js";
-import { cloudConfigured, PROVIDERS, signedIn, providerAvailability, readPullResponse } from "../src/cloud.js";
+import {
+  cloudConfigured,
+  PROVIDERS,
+  signedIn,
+  providerAvailability,
+  readPullResponse,
+  discordAuthorizeUrl,
+} from "../src/cloud.js";
+import { discordProfile } from "../api/discord/callback.js";
+import { DISCORD_CLIENT_ID } from "../src/config.js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID } from "../src/config.js";
 
 let failures = 0;
@@ -467,6 +476,52 @@ console.log("\n13. Cloud is optional and fails soft");
     Object.values(providerAvailability(null)).every((v) => v === false));
   check("an empty external map disables everything",
     Object.values(providerAvailability({ external: {} })).every((v) => v === false));
+
+  // -------------------------------------------------------------------------
+  // Discord sign-in runs on our own domain
+  //
+  // The whole reason api/discord/callback.js exists is that Supabase's hosted
+  // redirect made Discord's consent screen announce
+  // "<project-ref>.supabase.co" to the player. If that hostname ever creeps
+  // back into the authorize URL, the bug is back and nothing else would catch
+  // it - the login would still work, it would just look untrustworthy again.
+  // -------------------------------------------------------------------------
+  const dUrl = new URL(discordAuthorizeUrl("https://ruledrift.vercel.app", "s7"));
+  const dRedirect = dUrl.searchParams.get("redirect_uri");
+
+  check("Discord sign-in starts at Discord", dUrl.origin === "https://discord.com", dUrl.origin);
+  check("Discord is sent back to OUR domain, not Supabase's",
+    dRedirect === "https://ruledrift.vercel.app/api/discord/callback", dRedirect);
+  check("the Supabase hostname never appears on Discord's consent screen",
+    !dUrl.search.includes("supabase.co"), dUrl.search);
+  check("Discord is asked only for identity and email",
+    dUrl.searchParams.get("scope") === "identify email", dUrl.searchParams.get("scope"));
+  check("the CSRF state is carried through", dUrl.searchParams.get("state") === "s7");
+  check("the authorize URL asks for the code flow",
+    dUrl.searchParams.get("response_type") === "code");
+  check("the Discord client ID is either unset or a real snowflake",
+    DISCORD_CLIENT_ID === "" || /^[0-9]{17,20}$/.test(DISCORD_CLIENT_ID),
+    DISCORD_CLIENT_ID || "(unset)");
+
+  // The Supabase user is keyed on email, so an unverified address would let
+  // someone claim an account that is not theirs.
+  check("an unverified Discord email is refused",
+    discordProfile({ id: "1", email: "a@b.com", verified: false }) === null);
+  check("a Discord account with no email is refused",
+    discordProfile({ id: "1", username: "x" }) === null);
+
+  const dp = discordProfile({ id: "42", email: "a@b.com", verified: true, username: "mridul", avatar: "abc" });
+  check("a verified Discord account yields a profile", dp !== null);
+  check("the profile keeps the email", dp.email === "a@b.com");
+  check("the profile is tagged as discord", dp.provider === "discord");
+  check("the avatar URL is built from the account id and hash",
+    dp.avatar_url === "https://cdn.discordapp.com/avatars/42/abc.png?size=128", dp.avatar_url);
+  check("the display name falls back to the username",
+    dp.full_name === "mridul", dp.full_name);
+  check("a global name wins over the username",
+    discordProfile({ id: "42", email: "a@b.com", verified: true, username: "u", global_name: "G" }).full_name === "G");
+  check("an avatarless account yields an empty avatar, not a broken URL",
+    discordProfile({ id: "42", email: "a@b.com", verified: true, username: "u" }).avatar_url === "");
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);

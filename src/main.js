@@ -1345,11 +1345,35 @@ function screenStats() {
 // boot
 // ---------------------------------------------------------------------------
 
+/** Plain-language version of a sign-in failure code. */
+const SIGN_IN_ERRORS = {
+  server_not_configured: "the server is missing its Discord keys",
+  discord_token: "Discord would not confirm the login",
+  discord_user: "Discord would not share your account",
+  discord_no_email: "that Discord account has no verified email address",
+  session_mint: "the account service refused the sign-in",
+  state_mismatch: "the sign-in did not start in this tab",
+  verify_failed: "the sign-in token had already expired",
+  profile_failed: "your account could not be read back",
+  network: "the network dropped",
+  no_code: "Discord sent us back without a login",
+  no_token: "Discord sent us back without a login",
+};
+
+function signInErrorText(code) {
+  return SIGN_IN_ERRORS[code] || code;
+}
+
 async function boot() {
   // An OAuth return must be handled before anything renders, so the player
   // lands on a signed-in screen rather than seeing a flash of signed-out UI.
   let justSignedIn = false;
-  if (cloud.cloudConfigured() && location.hash.includes("access_token")) {
+  // Two shapes arrive here: Supabase's own #access_token, and #rd_otp from our
+  // Discord callback. Gating on access_token alone would silently ignore every
+  // Discord sign-in.
+  const hadOAuthHash = /[#&](access_token|rd_otp|rd_error)=/.test(location.hash);
+  const hadSupabaseHash = location.hash.includes("access_token");
+  if (cloud.cloudConfigured() && hadOAuthHash) {
     try {
       justSignedIn = Boolean(await cloud.consumeRedirect());
     } catch {
@@ -1363,7 +1387,11 @@ async function boot() {
       if (u && !profile.name) profile = store.setIdentity(profile, { name: u.name });
       toast("Signed in - progress backed up");
     } else {
-      toast("Sign-in failed. You can keep playing without an account.");
+      // Pressing Cancel is not a fault and gets no scolding. A real failure
+      // names itself, because "sign-in failed" hides the reason it failed.
+      const err = cloud.takeSignInError();
+      if (err) toast(`Sign-in failed - ${signInErrorText(err)}`, 3800);
+      else if (hadSupabaseHash) toast("Sign-in failed. You can keep playing without an account.");
     }
   } else if (cloud.signedIn() && (cloud.hasQueued() || navigator.onLine !== false)) {
     // Returning signed-in player: sync quietly in the background, never block.

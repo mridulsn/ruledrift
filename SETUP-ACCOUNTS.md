@@ -78,16 +78,48 @@ Google's console was redesigned recently, so the menu names above may not match
 what is on screen. The credentials page is at
 https://console.cloud.google.com/auth/clients.
 
-## 5. Discord sign-in — ✅ DONE
+## 5. Discord sign-in — ✅ DONE, and since moved onto our own domain
 
-Recorded for reference. App name `Ruledrift`, Client ID `1545474193758621776`.
+App name `Ruledrift`, Client ID `1545474193758621776`.
 
-1. https://discord.com/developers/applications → **New Application**.
-2. **OAuth2** in the sidebar. Under **Redirects**, add the callback URL above,
-   and **Save Changes**.
-3. Copy the **Client ID**, then **Reset Secret** for the **Client secret**.
-4. In Supabase: **Authentication → Providers → Discord**, switch it on, paste
-   both, **Save**.
+**Why it was changed.** Routed through Supabase, Discord's consent screen told
+the player *"you will be redirected outside of Discord to
+https://yvttgbuhwkjeqqvblcbc.supabase.co"*. Supabase builds that `redirect_uri`
+from its own project URL, so no setting in either dashboard changes it — only
+owning the redirect does. (A Supabase Custom Domain would also fix it, at
+$10/mo. Declined.)
+
+Discord has no browser-side equivalent of Google Identity Services, and its
+token endpoint demands the client secret, which a browser cannot hold. So the
+flow is handled by `api/discord/callback.js`, a Vercel function:
+
+1. The game sends the player to Discord with
+   `redirect_uri=https://ruledrift.vercel.app/api/discord/callback` — which is
+   the hostname Discord now prints.
+2. The function swaps the code for the Discord profile using the secret.
+3. It mints a Supabase session for that email via `/auth/v1/admin/generate_link`
+   and hands the browser a single-use `token_hash`.
+
+**generate_link is deliberately how the session is minted:** it resolves an
+existing email to its existing `auth.users` row, so a returning Discord player
+keeps the same id — and `profiles.id` references that id, so they keep their
+progress. Creating a user first would have produced a second account, and their
+history would have looked deleted.
+
+**Two environment variables on Vercel make it work** (Project → Settings →
+Environment Variables, all three environments):
+
+| Name | Where it comes from |
+|---|---|
+| `DISCORD_CLIENT_SECRET` | Discord dev portal → OAuth2 → Reset Secret |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase → Settings → API keys → `service_role` |
+
+Neither may ever be committed. The client IDs in `src/config.js` are public by
+design; these two are not.
+
+**Discord dev portal → OAuth2 → Redirects must contain**
+`https://ruledrift.vercel.app/api/discord/callback`. The old Supabase callback
+can stay listed harmlessly, but nothing uses it now.
 
 ## 6. Point Supabase back at the game — ✅ DONE
 

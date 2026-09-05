@@ -12,11 +12,19 @@
 //     device. Both sides are merged (see mergeProfiles), so signing in on a new
 //     phone cannot wipe the history on your laptop.
 
-import { SUPABASE_URL, SUPABASE_ANON_KEY, REDIRECT_URL, GOOGLE_CLIENT_ID, cloudConfigured } from "./config.js";
+import {
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  REDIRECT_URL,
+  GOOGLE_CLIENT_ID,
+  DISCORD_CLIENT_ID,
+  cloudConfigured,
+} from "./config.js";
 
 const SESSION_KEY = "ruledrift.session";
 const QUEUE_KEY = "ruledrift.pendingSync";
 const LAST_SYNC_KEY = "ruledrift.lastSync";
+const DISCORD_STATE_KEY = "ruledrift.discordState";
 
 export const PROVIDERS = [
   { id: "google", label: "Continue with Google", icon: "G" },
@@ -72,9 +80,42 @@ export const signedIn = () => Boolean(currentUser());
 // auth
 // ---------------------------------------------------------------------------
 
-/** Send the player to Google or Discord. Returns to REDIRECT_URL with a hash. */
+/**
+ * Pure: the URL that starts Discord sign-in.
+ *
+ * The point of this function is the redirect_uri. Supabase's hosted authorize
+ * endpoint would set it to <project-ref>.supabase.co, and Discord prints that
+ * hostname to the player. Pointing it at our own /api/discord/callback is what
+ * puts ruledrift's name on the consent screen instead.
+ */
+export function discordAuthorizeUrl(origin, state) {
+  const q = new URLSearchParams({
+    client_id: DISCORD_CLIENT_ID,
+    redirect_uri: `${origin}/api/discord/callback`,
+    response_type: "code",
+    scope: "identify email",
+    state,
+  });
+  return `https://discord.com/api/oauth2/authorize?${q}`;
+}
+
+/** Send the player to a provider. Returns to the game with a hash to consume. */
 export function signIn(provider) {
   if (!cloudConfigured()) return false;
+
+  if (provider === "discord") {
+    if (!DISCORD_CLIENT_ID) return false;
+    // Carried through Discord and back, and checked on return. Without it, a
+    // crafted link could drop somebody else's token into this page.
+    const state = hex(crypto.getRandomValues(new Uint8Array(16)));
+    try {
+      sessionStorage.setItem(DISCORD_STATE_KEY, state);
+    } catch {}
+    location.href = discordAuthorizeUrl(location.origin, state);
+    return true;
+  }
+
+  // Any provider added later still works through Supabase's generic redirect.
   const url =
     `${SUPABASE_URL}/auth/v1/authorize?provider=${encodeURIComponent(provider)}` +
     `&redirect_to=${encodeURIComponent(REDIRECT_URL)}`;
@@ -116,6 +157,10 @@ export async function consumeRedirect() {
   if (!hash) return null;
   const p = new URLSearchParams(hash);
 
+  // Discord returns through our own /api/discord/callback carrying a single-use
+  // token rather than Supabase's pair, so it is handled before the generic path.
+  if (p.has("rd_otp") || p.has("rd_error")) return consumeDiscordReturn(p);
+
   const access_token = p.get("access_token");
   const refresh_token = p.get("refresh_token");
   if (!access_token) return null;
@@ -135,6 +180,85 @@ export async function consumeRedirect() {
   return writeSession(session);
 }
 
+// A sign-in that fails must say so. A silent return to the menu looks identical
+// to the player changing their mind, and hides every real fault behind it.
+let signInError = "";
+
+/** Read and clear the reason the last sign-in attempt failed, if any. */
+export function takeSignInError() {
+  const e = signInError;
+  signInError = "";
+  return e;
+}
+
+/**
+ * Finish the Discord round trip: check the state, then trade the single-use
+ * token for a real Supabase session.
+ */
+async function consumeDiscordReturn(p) {
+  history.replaceState({}, "", location.pathname + location.search);
+
+  let expected = null;
+  try {
+    expected = sessionStorage.getItem(DISCORD_STATE_KEY);
+    sessionStorage.removeItem(DISCORD_STATE_KEY);
+  } catch {}
+
+  const err = p.get("rd_error");
+  if (err) {
+    // "access_denied" is the player pressing Cancel, which is not a fault.
+    signInError = err === "access_denied" ? "" : err;
+    return null;
+  }
+
+  const otp = p.get("rd_otp");
+  if (!expected || p.get("rd_state") !== expected) {
+    signInError = "state_mismatch";
+    return null;
+  }
+  if (!otp) {
+    signInError = "no_token";
+    return null;
+  }
+
+  try {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/verify`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "magiclink", token_hash: otp }),
+    });
+    if (!res.ok) {
+      signInError = "verify_failed";
+      return null;
+    }
+    const j = await res.json();
+    if (!j.access_token) {
+      signInError = "verify_failed";
+      return null;
+    }
+
+    const session = {
+      access_token: j.access_token,
+      refresh_token: j.refresh_token || null,
+      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
+      user: null,
+    };
+    writeSession(session);
+
+    const user = await fetchUser(j.access_token);
+    if (!user) {
+      writeSession(null);
+      signInError = "profile_failed";
+      return null;
+    }
+    session.user = user;
+    return writeSession(session);
+  } catch {
+    signInError = "network";
+    return null;
+  }
+}
+
 async function fetchUser(token) {
   try {
     const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: authHeaders(token) });
@@ -146,7 +270,9 @@ async function fetchUser(token) {
       email: u.email || "",
       name: meta.full_name || meta.name || meta.user_name || (u.email || "").split("@")[0] || "Player",
       avatarUrl: meta.avatar_url || meta.picture || "",
-      provider: (u.app_metadata && u.app_metadata.provider) || "",
+      // Discord users are minted via the admin API, so their provider is
+      // recorded in user_metadata; Google's arrives in app_metadata.
+      provider: meta.provider || (u.app_metadata && u.app_metadata.provider) || "",
     };
   } catch {
     return null;
