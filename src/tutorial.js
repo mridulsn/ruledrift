@@ -26,7 +26,7 @@ export const STEPS = [
     target: 2,
     success: "Yes! That one was the winner.",
     teach:
-      "Notice that nobody told you why. This game keeps a secret: a hidden reason that decides which tile wins. You have to work it out by guessing and watching what turns green.",
+      "Notice that nobody told you why. This game keeps a secret: a hidden reason that decides which tile wins. You have to work it out by guessing and watching which stone flares gold.",
     fail: "Look again. Four of them are the same. One is not.",
   },
   {

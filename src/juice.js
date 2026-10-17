@@ -41,6 +41,7 @@ export function burst(x, y, color = "var(--good)", count = 12) {
     p.style.left = x + "px";
     p.style.top = y + "px";
     p.style.background = color;
+    p.style.color = color;
     p.style.setProperty("--dx", Math.cos(angle) * dist + "px");
     p.style.setProperty("--dy", Math.sin(angle) * dist + "px");
     p.style.animationDelay = Math.random() * 40 + "ms";
@@ -98,7 +99,7 @@ export function celebrate(tileEl, text, big = false) {
   const [x, y] = centerOf(tileEl);
   vibrate(big ? 22 : 8);
   if (big) ring(x, y);
-  setTimeout(() => burst(x, y, big ? "var(--switch)" : "var(--good)", big ? 20 : 11), 50);
+  setTimeout(() => burst(x, y, big ? "var(--switch)" : "var(--gold-hi)", big ? 20 : 12), 50);
   setTimeout(() => floatText(x, y - 18, text, big ? "big" : ""), 100);
 }
 
@@ -106,8 +107,7 @@ export function punish(tileEl, boardEl) {
   vibrate([12, 40, 12]);
   shake(boardEl, 1);
   flashScreen("bad");
-  if (tileEl) {
-    const [x, y] = centerOf(tileEl);
-    setTimeout(() => floatText(x, y - 14, "✕", "bad"), 90);
-  }
+  // No floating cross: the stone itself cracks (see main.js), which says
+  // "wrong" without needing colour.
+  void tileEl;
 }

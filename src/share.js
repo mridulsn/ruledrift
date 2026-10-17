@@ -88,22 +88,32 @@ function chunk(str, n) {
 }
 
 export function buildShareText(result, { name, url, dailyNumber } = {}) {
-  const title =
-    result.mode === "daily" && dailyNumber
+  const isRun = result.mode === "run";
+  const title = isRun
+    ? result.daily && dailyNumber
+      ? `RULEDRIFT Daily Run #${dailyNumber}`
+      : `RULEDRIFT Drift Run \u00b7 seed ${result.seed}`
+    : result.mode === "daily" && dailyNumber
       ? `RULEDRIFT Daily #${dailyNumber}`
-      : `RULEDRIFT · seed ${result.seed}`;
+      : `RULEDRIFT \u00b7 seed ${result.seed}`;
 
   const lines = [
     title,
-    `${result.score.toLocaleString()} pts · L${result.level} · ${Math.round(
-      result.accuracy * 100
-    )}% · Brain ${result.brainScore}`,
+    isRun
+      ? `${result.score.toLocaleString()} pts \u00b7 depth ${result.depth}/${result.length || 12}${result.won ? " \u00b7 cleared" : ""} \u00b7 ${Math.round(
+          result.accuracy * 100
+        )}% \u00b7 Brain ${result.brainScore}`
+      : `${result.score.toLocaleString()} pts \u00b7 L${result.level} \u00b7 ${Math.round(
+          result.accuracy * 100
+        )}% \u00b7 Brain ${result.brainScore}`,
     "",
     ...chunk(resultStrip(result), 10),
     "",
   ];
 
-  if (result.mode !== "daily") lines.push(`Beat me on this exact board:`);
+  if (isRun) {
+    if (!result.daily) lines.push(`Beat me on this exact run:`);
+  } else if (result.mode !== "daily") lines.push(`Beat me on this exact board:`);
   if (url) lines.push(url);
   lines.push(encodePayload(result, name));
 
@@ -113,6 +123,12 @@ export function buildShareText(result, { name, url, dailyNumber } = {}) {
 export function challengeUrl(seed, base) {
   const root = base || location.origin + location.pathname;
   return `${root}?s=${encodeURIComponent(seed)}`;
+}
+
+/** A link that opens one exact Drift Run (same map, same rooms). */
+export function runUrl(seed, base) {
+  const root = base || location.origin + location.pathname;
+  return `${root}?run=${encodeURIComponent(seed)}`;
 }
 
 export async function copyText(text) {
