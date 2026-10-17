@@ -94,12 +94,9 @@ function topBar() {
     brandMark(),
     h("div", { class: "spacer" }),
     !user && cloud.cloudConfigured()
-      ? h("button", { class: "btn btn-sm loginbtn", onclick: screenProfile }, "Log in")
-      : null,
-    h("button", { class: "icon-btn", "aria-label": "Profile", title: "Profile", onclick: screenProfile },
-      avatarGlyph()),
-    h("button", { class: "icon-btn", "aria-label": "Settings", title: "Settings", onclick: screenSettings },
-      icon("gear"))
+      ? h("button", { class: "btn btn-sm loginbtn", onclick: loginSheet }, "Log in")
+      : h("button", { class: "icon-btn", "aria-label": "Profile", title: "Profile", onclick: screenProfile },
+        avatarGlyph())
   );
 }
 
@@ -302,7 +299,8 @@ function screenHome() {
       menuItem("chart", "My report", profile.history.length ? "Your profile over time" : "Play once to unlock",
         screenStats, !profile.history.length),
       menuItem("trophy", "Achievements", "What you have unlocked", screenAchievements),
-      menuItem("codex", "Rule codex", `Every rule \u00b7 tier ${tier} of 3`, screenCodex)),
+      menuItem("codex", "Rule codex", `Every rule \u00b7 tier ${tier} of 3`, screenCodex),
+      menuItem("user", "Profile", "Sound, your data and sign-in", screenProfile)),
 
     profile.history.length
       ? h("div", { class: "stat-grid" },
@@ -367,12 +365,10 @@ function screenPlay() {
 // SETTINGS
 // ---------------------------------------------------------------------------
 
-function screenSettings() {
+/** Sound, learning, data and about: the old Settings screen, now part of Profile. */
+function settingsCards() {
   const muted = isMuted();
-
-  const wrap = h("div", { class: "stack" },
-    header("Settings", screenHome),
-
+  return [
     h("div", { class: "card" },
       h("div", { class: "between" },
         h("div", {},
@@ -389,8 +385,6 @@ function screenSettings() {
       h("div", { class: "btn-row" },
         h("button", { class: "btn btn-sm", onclick: () => { resetTutorial(); screenTutorial(); } }, "Replay tutorial"),
         h("button", { class: "btn btn-sm", onclick: screenGuide }, "How to play"))),
-
-    accountCard(),
 
     h("div", { class: "card" },
       h("h3", {}, "Your data"),
@@ -419,7 +413,7 @@ function screenSettings() {
             if (await cloud.deleteCloud()) {
               await cloud.signOut();
               toast("Account copy deleted");
-              screenSettings();
+              screenProfile();
             } else {
               btn.textContent = "Delete account copy";
               toast("Could not reach your account. Nothing was deleted.", 3800);
@@ -431,9 +425,7 @@ function screenSettings() {
       h("h3", {}, "About"),
       h("p", { class: "small muted", style: "margin-bottom:0" },
         "Ruledrift is built on the Wisconsin Card Sorting Task, a real test of cognitive flexibility. It measures how fast you adapt - it does not claim to raise your IQ. Made with AI by Mridul.")),
-
-    footer());
-  render(wrap);
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -1152,7 +1144,7 @@ function screenProfile() {
       h("button", { class: "btn", onclick: screenAchievements }, "Achievements"),
       h("button", { class: "btn", onclick: screenStats, disabled: !profile.history.length }, "Report")),
 
-    h("button", { class: "btn btn-ghost", onclick: screenSettings }, icon("gear", { size: 18 }), "Settings"),
+    ...settingsCards(),
     footer());
   render(wrap);
 }
@@ -1163,35 +1155,45 @@ function screenProfile() {
  * provider in the dashboard lights its button up with no code change.
  */
 /**
- * A small sheet holding Google's own sign-in button.
- *
- * Google renders that button itself and forbids restyling it, so it cannot sit
- * inline next to ours without looking like a mistake. In its own sheet it looks
- * like exactly what it is - Google asking, not us - which is the point.
+ * The login pop-up. Google renders its own button and forbids restyling it, so
+ * it gets its own full-width row inside the pop-up; Discord sits under it at the
+ * same width. Either one signs in from here - no second sheet.
  */
-function googleSheet() {
-  const slot = h("div", { class: "gsi-slot" });
-  const status = h("div", { class: "tiny muted", style: "margin-top:14px;min-height:16px" });
-
+function loginSheet() {
+  const gslot = h("div", { class: "gsi-slot" });
+  const status = h("div", { class: "tiny muted", style: "margin-top:12px;min-height:16px" });
   const back = h("div", { class: "sheet-back" });
   const close = () => back.remove();
 
+  const discordBtn = h("button", { class: "btn oauth oauth-discord", onclick: () => cloud.signIn("discord") },
+    h("span", { class: "oa-icon", html: BRAND_SVG.discord }),
+    h("span", { class: "oa-label" }, "Continue with Discord"));
+
   const card = h("div", { class: "sheet" },
-    h("div", { class: "sheet-t" }, "Continue with Google"),
+    h("div", { class: "sheet-t" }, "Log in"),
     h("div", { class: "sheet-s" },
-      "Google confirms it is you. Ruledrift only ever receives your name and email address."),
-    slot,
+      "Back up your progress and play on any device. Ruledrift only receives your name and email address."),
+    h("div", { class: "stack oauth-stack", style: "margin-top:12px" }, gslot, discordBtn),
     status,
-    h("button", { class: "btn btn-sm", style: "margin-top:14px", onclick: close }, "Cancel"));
+    h("button", { class: "btn btn-sm", style: "margin-top:12px", onclick: close }, "Cancel"));
 
   back.appendChild(card);
   back.addEventListener("click", (e) => { if (e.target === back) close(); });
   document.body.appendChild(back);
 
+  const paint = (avail) => {
+    const off = (id) => (avail ? avail[id] === false : false);
+    discordBtn.disabled = off("discord");
+    discordBtn.title = off("discord") ? "Not set up yet" : "";
+    gslot.hidden = off("google") || !cloud.googleIdConfigured();
+  };
+  paint(cloud.cachedProviders());
+  cloud.refreshProviders().then(paint).catch(() => {});
+
+  if (!cloud.googleIdConfigured()) return;
   const dark = !window.matchMedia("(prefers-color-scheme: light)").matches
     || document.documentElement.dataset.theme === "dark";
-
-  cloud.mountGoogleButton(slot, { dark, width: Math.min(320, window.innerWidth - 96) },
+  cloud.mountGoogleButton(gslot, { dark, width: gslot.clientWidth || Math.min(320, window.innerWidth - 84) },
     async (session) => {
       if (!session) {
         status.textContent = "Google refused that sign-in. Nothing was changed.";
@@ -1207,8 +1209,6 @@ function googleSheet() {
       screenProfile();
     }
   ).catch(() => {
-    // Offline, or a blocker ate Google's script. Say so rather than showing an
-    // empty box, and leave the redirect route as the way out.
     status.textContent = "Could not reach Google. Check your connection, or use Discord.";
   });
 }
@@ -1226,7 +1226,7 @@ function importSheet() {
   const card = h("div", { class: "sheet" },
     h("div", { class: "sheet-t" }, "Import progress"),
     h("div", { class: "sheet-s" },
-      "On the other device, open Settings, Your data, Export. Paste it here. Your games are added to the ones on this device; nothing here is lost."),
+      "On the other device, open Profile, Your data, Export. Paste it here. Your games are added to the ones on this device; nothing here is lost."),
     box,
     status,
     h("div", { class: "btn-row", style: "margin-top:12px;justify-content:center" },
@@ -1240,7 +1240,7 @@ function importSheet() {
         close();
         toast(added > 0 ? `Imported ${added} game${added === 1 ? "" : "s"}` : "Imported - nothing new to add");
         if (cloud.signedIn()) await syncNow({ quiet: true }).catch(() => cloud.queueSync());
-        screenSettings();
+        screenProfile();
       } }, "Import"),
       h("button", { class: "btn btn-sm", onclick: close }, "Cancel")));
   back.appendChild(card);
@@ -1266,48 +1266,6 @@ const BRAND_SVG = {
     "</svg>",
 };
 
-function providerButtons() {
-  const known = cloud.cachedProviders();
-  const box = h("div", { class: "stack oauth-stack", style: "margin-top:12px" });
-
-  const paint = (avail) => {
-    box.replaceChildren(
-      ...cloud.PROVIDERS.map((p) => {
-        // Unknown (never asked, or offline) is treated as available - better to
-        // let someone try than to block a login that would have worked.
-        const off = avail ? avail[p.id] === false : false;
-
-        // Google opens its own sheet (Google's button); Discord goes by redirect
-        // through the sign-in server.
-        const start = () => {
-          if (p.id === "google" && cloud.googleIdConfigured()) googleSheet();
-          else cloud.signIn(p.id);
-        };
-
-        return h("button", {
-          class: `btn oauth oauth-${p.id}` + (off ? " oauth-off" : ""),
-          disabled: off,
-          title: off ? "Not set up yet" : "",
-          onclick: off ? null : start,
-        },
-          off
-            ? h("span", { class: "oa-icon" }, icon("close", { size: 16 }))
-            : h("span", { class: "oa-icon", html: BRAND_SVG[p.id] || "" }),
-          h("span", { class: "oa-label" }, p.label),
-          off ? h("span", { class: "oa-note" }, "Not set up yet") : null);
-      })
-    );
-  };
-
-  paint(known);
-  // Re-check in the background; if the answer changed, redraw in place.
-  cloud.refreshProviders().then((avail) => {
-    if (avail && JSON.stringify(avail) !== JSON.stringify(known)) paint(avail);
-  }).catch(() => {});
-
-  return box;
-}
-
 /**
  * The account panel. Signing in is entirely optional - the card says so plainly
  * rather than nagging, because the game genuinely does not need it.
@@ -1327,7 +1285,7 @@ function accountCard() {
       h("h3", {}, "Save your progress forever"),
       h("p", { class: "small muted" },
         "Right now everything is stored in this browser. Clear your browsing data and it is gone, and your phone has its own separate history. Sign in and your record is backed up and follows you to any device."),
-      providerButtons(),
+      h("button", { class: "btn btn-primary loginbtn-card", onclick: loginSheet }, "Log in"),
       h("p", { class: "tiny", style: "margin-top:12px" },
         "Optional. The game works fully without an account, offline and forever."));
   }

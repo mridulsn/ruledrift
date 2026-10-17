@@ -2,7 +2,7 @@
 // no network at all. Bump CACHE when files change - the old cache is deleted on
 // activate, so a stale shell can never survive a deploy.
 
-const CACHE = "ruledrift-v17";
+const CACHE = "ruledrift-v18";
 
 const SHELL = [
   "./",

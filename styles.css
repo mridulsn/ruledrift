@@ -64,8 +64,10 @@ html, body {
   color: var(--ink);
   font-family: var(--font);
   -webkit-tap-highlight-color: transparent;
-  overscroll-behavior: none;
-  overflow-x: hidden;
+  /* clip, not hidden: hidden on both html and body (with overscroll-behavior:
+     none) stopped touch scrolling on phones entirely. clip trims sideways
+     overflow without creating a scroll container. */
+  overflow-x: clip;
 }
 
 /* ---------- the world behind everything ---------- */
@@ -855,3 +857,11 @@ img.pavatar { object-fit: cover; }
   .fx-float { animation-duration: .4s; }
   .tile { transition: none; }
 }
+
+/* In the login pop-up, Discord matches Google's own button: same height, shape and width. */
+.sheet .oauth-stack .oauth { min-height: 44px; border-radius: 6px; }
+.sheet .oauth-stack .oa-icon { width: 26px; height: 26px; border-radius: 6px; }
+.sheet .gsi-slot { min-height: 44px; }
+
+/* An odd last tile spans the row instead of leaving a hole. */
+.menu > :last-child:nth-child(odd) { grid-column: 1 / -1; min-height: 0; flex-direction: row; align-items: center; }

@@ -360,7 +360,7 @@ export async function mountGoogleButton(el, opts, onDone) {
     theme: (opts && opts.dark) ? "filled_black" : "outline",
     size: "large",
     text: "continue_with",
-    shape: "pill",
+    shape: "rectangular",
     logo_alignment: "left",
     width: Math.max(200, Math.min(400, Math.round((opts && opts.width) || 300))),
   });
