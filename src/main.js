@@ -502,7 +502,9 @@ function showMark(rec, board, feed) {
   if (rec.wrong) {
     board.flashWrong(rec.key);
     sfx.wrong();
-    juice.punish(null, board.el);
+    // Gentle: a small shake of the grid and a buzz, no red flash over the screen.
+    juice.shake(board.el, 0.5);
+    juice.vibrate([10, 30, 10]);
     feed.className = "feedline bad";
     feed.textContent = rec.shielded
       ? "Not that one - your shield took it. It is crossed out for you."
@@ -539,11 +541,12 @@ function chipsRow(...kids) {
 // a solo puzzle: Daily or Practice
 // ---------------------------------------------------------------------------
 
-const PROGRESS_KEY = "ruledrift.cluesInProgress";
+// One saved slot per mode, so a Practice game never overwrites a half-done Daily.
+const PROGRESS_KEY = (mode) => "ruledrift.cluesInProgress." + mode;
 
 function loadProgress(mode, seed, preset) {
   try {
-    const p = JSON.parse(localStorage.getItem(PROGRESS_KEY) || "null");
+    const p = JSON.parse(localStorage.getItem(PROGRESS_KEY(mode)) || "null");
     return p && p.mode === mode && p.seed === seed && p.preset === preset ? p : null;
   } catch {
     return null;
@@ -551,11 +554,11 @@ function loadProgress(mode, seed, preset) {
 }
 
 function saveProgress(p) {
-  try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(p)); } catch {}
+  try { localStorage.setItem(PROGRESS_KEY(p.mode), JSON.stringify(p)); } catch {}
 }
 
-function clearProgress() {
-  try { localStorage.removeItem(PROGRESS_KEY); } catch {}
+function clearProgress(mode) {
+  try { localStorage.removeItem(PROGRESS_KEY(mode)); } catch {}
 }
 
 function startPuzzle(mode, seed, preset) {
@@ -638,7 +641,7 @@ function screenPuzzle(mode, elapsed = 0) {
   function win() {
     clearInterval(timer);
     board.lock();
-    clearProgress();
+    clearProgress(mode);
     sfx.adapt();
     const result = puzzleResult(p, { mode, ms: ms(), daily });
     const { newlyUnlocked, xpGained } = store.recordResult(profile, result);
