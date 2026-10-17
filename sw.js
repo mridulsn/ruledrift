@@ -2,13 +2,13 @@
 // no network at all. Bump CACHE when files change - the old cache is deleted on
 // activate, so a stale shell can never survive a deploy.
 
-const CACHE = "ruledrift-v15";
+const CACHE = "ruledrift-v16";
 
 const SHELL = [
   "./",
   "index.html",
-  "privacy",
-  "terms",
+  "privacy.html",
+  "terms.html",
   "styles.css",
   "legal.css",
   "manifest.webmanifest",
@@ -29,6 +29,8 @@ const SHELL = [
   "assets/icon.svg",
   "assets/icon-192.png",
   "assets/icon-512.png",
+  "assets/icon-maskable-512.png",
+  "assets/apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (e) => {
@@ -41,7 +43,9 @@ self.addEventListener("activate", (e) => {
   e.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      // Only this game's old caches: the whole of mridulsaravanan.com shares one
+      // cache storage, and the other apps' caches are not ours to delete.
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("ruledrift-") && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });

@@ -305,3 +305,26 @@ export function resetAll() {
 export function exportProfile() {
   return JSON.stringify(load(), null, 2);
 }
+
+/**
+ * Pure: read pasted Export text back into a profile, or say why it is not one.
+ * The result is only ever MERGED into the local profile, never swapped in, so
+ * importing an old or partial copy cannot erase anything.
+ * @returns {{ok: true, profile: object} | {ok: false, error: string}}
+ */
+export function parseImport(text) {
+  let p;
+  try {
+    p = JSON.parse(String(text || "").trim());
+  } catch {
+    return { ok: false, error: "That is not Ruledrift export text." };
+  }
+  if (!p || typeof p !== "object" || Array.isArray(p)) return { ok: false, error: "That is not Ruledrift export text." };
+  if (p.history !== undefined && !Array.isArray(p.history)) return { ok: false, error: "That export is damaged (history is not a list)." };
+  if (p.dailyResults !== undefined && (typeof p.dailyResults !== "object" || Array.isArray(p.dailyResults) || p.dailyResults === null)) {
+    return { ok: false, error: "That export is damaged (daily results)." };
+  }
+  if (!Array.isArray(p.history) && !p.dailyResults && !p.xp) return { ok: false, error: "That export has no games in it." };
+  const history = (p.history || []).filter((r) => r && typeof r === "object" && typeof r.playedAt === "number");
+  return { ok: true, profile: { ...p, history, duels: Array.isArray(p.duels) ? p.duels : [] } };
+}

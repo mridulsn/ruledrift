@@ -1,41 +1,38 @@
 // Cloud configuration.
 //
-// Fill these two in to turn on accounts. Until then the game runs exactly as it
-// always has: fully offline, no network calls, no sign-in button anywhere.
+// Accounts run on Firebase (Auth + Firestore). The game is a static page on
+// GitHub Pages, so the parts a browser cannot do - holding the Discord secret,
+// checking Google's token, minting a Firebase sign-in token - are done by the
+// one small server behind mridulsaravanan.com, at auth.mridulsaravanan.com.
 //
-// Both values are safe to commit. The anon key is *designed* to be public - it
-// only grants what Row Level Security allows, and the policies in
-// supabase/schema.sql restrict every row to the user who owns it. The Google and
-// Discord client secrets are NOT here; those live in the Supabase dashboard and
-// should never appear in this repository.
+// Every value here is safe to commit:
+// - The Firebase web API key identifies the project; it authorises nothing.
+//   The Firestore rules are what keep each player's backup to that player.
+// - OAuth client IDs name the app on the consent screen; the matching secrets
+//   live only in the server's environment variables.
 //
-// See SETUP-ACCOUNTS.md for the ten-minute walkthrough.
+// Supabase was the account system until October 2026. Its free plan pauses
+// after a week without visitors, and a paused project silently breaks every
+// sign-in, so it was replaced. Firebase's free plan does not pause.
 
-export const SUPABASE_URL = "https://yvttgbuhwkjeqqvblcbc.supabase.co";
-export const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl2dHRnYnVod2tqZXFxdmJsY2JjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg1MjE3NjcsImV4cCI6MjEwNDA5Nzc2N30.klR_ZzISpcoiYdccjKwCEoeKVISupc0L4DRD8UKq_bY";
+/** Where the sign-in server is. Anywhere but the real site (a local dev server), it is this origin. */
+export const API_ORIGIN =
+  typeof location !== "undefined" && /(^|\.)mridulsaravanan\.com$/.test(location.hostname)
+    ? "https://auth.mridulsaravanan.com"
+    : "";
 
-// Google's public OAuth client ID. Safe to commit - it is designed to be read
-// out of the page source; it identifies the app, it does not authorise anything.
-//
-// This exists so Google sign-in can happen *on this domain* via Google Identity
-// Services, rather than bouncing through <project-ref>.supabase.co. A player
-// being asked to trust a random-looking hostname is a player who closes the tab.
+export const APP = "ruledrift";
+
+export const FIREBASE_API_KEY = "AIzaSyC7eOWSXtmkRFuG0xw_Qv9e9Pfi4_g2h10";
+export const FIREBASE_PROJECT_ID = "mayhemnull-5b349";
+
+// Google's public OAuth client ID, for Google Identity Services. The server
+// checks that every Google token it is handed was issued for exactly this ID.
 export const GOOGLE_CLIENT_ID =
   "45031354820-9t0la84m9fjng5vsrn6svj35o72b92rh.apps.googleusercontent.com";
 
-// Discord's public OAuth client ID. Safe to commit for the same reason as
-// Google's - it names the app, it authorises nothing. The matching *secret*
-// lives only in the DISCORD_CLIENT_SECRET environment variable on the server.
-//
-// This exists so Discord sign-in can start from this domain, which is what makes
-// Discord's consent screen say "you will be redirected outside of Discord to
-// https://ruledrift.vercel.app" instead of naming the Supabase project. See
-// api/discord/callback.js for why that has to be done by hand.
-export const DISCORD_CLIENT_ID = "1545474193758621776";
-
-/** Where the OAuth provider sends the player back to. */
+/** Where the game lives, so a sign-in comes back to the game and not the site's home page. */
 export const REDIRECT_URL =
   typeof location !== "undefined" ? location.origin + location.pathname : "";
 
-export const cloudConfigured = () => Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+export const cloudConfigured = () => Boolean(FIREBASE_API_KEY && FIREBASE_PROJECT_ID);

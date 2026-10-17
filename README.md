@@ -6,15 +6,16 @@ A brain game that runs entirely in the browser, works with the network switched
 off, and lets you duel a friend on a byte-identical board with no server and no
 account.
 
-**Play: https://ruledrift.vercel.app**
+**Play: https://mridulsaravanan.com/ruledrift/**
 
-Deployed on Vercel. This repository is source only - GitHub Pages is
-deliberately switched off.
+Published with GitHub Pages under mridulsaravanan.com by the workflow in
+`.github/workflows/pages.yml`, which ships only the game's own files (not
+`tools/`). It moved there from ruledrift.vercel.app in October 2026.
 
 Run it locally with any static server:
 
 ```bash
-python -m http.server 8777    # then open http://localhost:8777
+python -m http.server 8796 --bind 127.0.0.1    # then open http://127.0.0.1:8796
 ```
 
 ---
@@ -205,9 +206,9 @@ src/tutorial.js  the five scripted onboarding boards + guide examples
 src/achievements.js  ranks, XP, stepped achievements
 src/juice.js     particles, floating text, shake, haptics
 src/cloud.js     optional accounts and profile sync (no SDK)
-src/config.js    the two public Supabase values
+src/config.js    public Firebase values and the sign-in server address
 src/main.js      screens and the game loop
-tools/selftest.mjs   84 invariant tests
+tools/selftest.mjs   invariant tests
 tools/make_icons.py  icon generation
 ```
 
@@ -229,13 +230,13 @@ Both are enforced by the generator and covered by tests:
 
 ```bash
 npm start                       # any static server works
-npm test                        # 84 invariant checks (no install needed)
+npm test                        # invariant checks (no install needed)
 npm run icons                   # regenerate icons
 ```
 
 Deploys as static files anywhere. Ships as a PWA - installable and fully
-playable offline. Signed out it makes no network calls at all; signed in, the
-only requests are to your own Supabase project.
+playable offline. Signed out, the only request is a small settings check to the
+sign-in server; signed in, the requests go to that server and to Firebase.
 
 ## Roadmap
 
@@ -267,17 +268,24 @@ Sync fails soft everywhere: offline rounds are queued and sent on reconnect, a
 failed sign-in leaves you playing anonymously, and an unreachable server never
 blocks or loses a round.
 
-Backed by Supabase with Row Level Security, so a player can only ever read and
-write their own row. Setup is in [SETUP-ACCOUNTS.md](SETUP-ACCOUNTS.md); until
-it is configured, no sign-in UI appears and the game makes no network calls at
-all.
+Backed by Firebase (Auth + Firestore, document `ruledrift/{uid}`), whose
+security rules let a player read and write only their own backup. Google and
+Discord confirm who the player is to the sign-in server at
+auth.mridulsaravanan.com (the `auth-api` project), which hands back a Firebase
+custom token. Setup is in [SETUP-ACCOUNTS.md](SETUP-ACCOUNTS.md).
+
+Until October 2026 accounts ran on Supabase. Its free plan pauses after a week
+without visitors, which silently broke every sign-in, so it was replaced.
+Settings, Your data, Import takes an Export from another device (or the old
+vercel.app address) and merges it in.
 
 ## Privacy
 
 No analytics and no tracking. Signed out, every result stays in your browser's
 localStorage. Signed in, your profile is also stored in your own row in the
 database, readable by nobody else. Either way it can be exported as JSON or
-deleted from the profile screen.
+deleted from Settings, Your data (Delete all for this device, Delete account
+copy for the cloud).
 
 ## Licence
 

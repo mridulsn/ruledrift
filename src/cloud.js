@@ -5,26 +5,33 @@
 //  1. The game must remain fully playable with no account and no network. Every
 //     function here fails soft - if the cloud is unconfigured, signed out, or
 //     unreachable, play continues and localStorage stays the source of truth.
-//  2. No SDK. Supabase's auth and REST endpoints are plain HTTPS, so talking to
-//     them with fetch keeps the build at zero dependencies and avoids shipping
+//  2. No SDK. Firebase's auth and Firestore endpoints are plain HTTPS, so talking
+//     to them with fetch keeps the build at zero dependencies and avoids shipping
 //     ~100KB to someone who just wants to tap five tiles.
 //  3. The device never trusts the cloud blindly and the cloud never trusts the
 //     device. Both sides are merged (see mergeProfiles), so signing in on a new
 //     phone cannot wipe the history on your laptop.
+//
+// How a sign-in works: the provider (Google or Discord) confirms who the player
+// is to the sign-in server (auth.mridulsaravanan.com), which hands back a
+// Firebase custom token. The page trades that for a Firebase session here.
+// Firebase's own provider buttons are not used: they send the player through
+// <project>.firebaseapp.com, a hostname nobody recognises.
 
 import {
-  SUPABASE_URL,
-  SUPABASE_ANON_KEY,
-  REDIRECT_URL,
+  API_ORIGIN,
+  APP,
+  FIREBASE_API_KEY,
+  FIREBASE_PROJECT_ID,
   GOOGLE_CLIENT_ID,
-  DISCORD_CLIENT_ID,
   cloudConfigured,
 } from "./config.js";
 
 const SESSION_KEY = "ruledrift.session";
 const QUEUE_KEY = "ruledrift.pendingSync";
 const LAST_SYNC_KEY = "ruledrift.lastSync";
-const DISCORD_STATE_KEY = "ruledrift.discordState";
+const CLIENT_STATE_KEY = "ruledrift.signInState";
+const PROVIDER_CACHE_KEY = "ruledrift.providers";
 
 export const PROVIDERS = [
   { id: "google", label: "Continue with Google", icon: "G" },
@@ -34,13 +41,50 @@ export const PROVIDERS = [
 export { cloudConfigured };
 
 // ---------------------------------------------------------------------------
+// server settings
+//
+// The sign-in server says which providers are really switched on, and (in local
+// tests only) where the Firebase emulators are. Asked once per page load; if it
+// cannot be reached, the built-in values are used.
+// ---------------------------------------------------------------------------
+
+let settingsLoad = null;
+
+function serverSettings() {
+  if (!settingsLoad) {
+    const ask = fetch(`${API_ORIGIN}/api/config?app=${APP}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    const giveUp = new Promise((resolve) => setTimeout(() => resolve(null), 5000));
+    settingsLoad = Promise.race([ask, giveUp]);
+    // A failed ask must not poison the rest of the visit - the player may just
+    // have been offline for a moment.
+    settingsLoad.then((s) => { if (!s) settingsLoad = null; });
+  }
+  return settingsLoad;
+}
+
+async function endpoints() {
+  const s = (await serverSettings()) || {};
+  return {
+    auth: s.authHost ? s.authHost + "/" : "https://",
+    firestore: s.fsHost || "https://firestore.googleapis.com",
+    apiKey: s.apiKey || FIREBASE_API_KEY,
+    projectId: s.projectId || FIREBASE_PROJECT_ID,
+    googleClientId: s.googleClientId || GOOGLE_CLIENT_ID,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // session storage
 // ---------------------------------------------------------------------------
 
 function readSession() {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const s = raw ? JSON.parse(raw) : null;
+    // A session left over from the Supabase days cannot be used with Firebase.
+    return s && s.firebase ? s : null;
   } catch {
     return null;
   }
@@ -48,7 +92,7 @@ function readSession() {
 
 function writeSession(s) {
   try {
-    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+    if (s) localStorage.setItem(SESSION_KEY, JSON.stringify({ ...s, firebase: true }));
     else localStorage.removeItem(SESSION_KEY);
   } catch {}
   return s;
@@ -80,104 +124,46 @@ export const signedIn = () => Boolean(currentUser());
 // auth
 // ---------------------------------------------------------------------------
 
+function hex(buf) {
+  return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /**
- * Pure: the URL that starts Discord sign-in.
- *
- * The point of this function is the redirect_uri. Supabase's hosted authorize
- * endpoint would set it to <project-ref>.supabase.co, and Discord prints that
- * hostname to the player. Pointing it at our own /api/discord/callback is what
- * puts ruledrift's name on the consent screen instead.
+ * Pure: the URL that starts a redirect sign-in (Discord) on the sign-in server.
+ * `state` comes back in the #fragment and is checked against this tab's copy,
+ * so a crafted link cannot sign a player into somebody else's account.
  */
-export function discordAuthorizeUrl(origin, state) {
-  const q = new URLSearchParams({
-    client_id: DISCORD_CLIENT_ID,
-    redirect_uri: `${origin}/api/discord/callback`,
-    response_type: "code",
-    scope: "identify email",
-    state,
-  });
-  return `https://discord.com/api/oauth2/authorize?${q}`;
+export function providerStartUrl(apiOrigin, provider, state) {
+  const q = new URLSearchParams({ app: APP, cs: state });
+  return `${apiOrigin}/api/auth/${encodeURIComponent(provider)}?${q}`;
 }
 
 /** Send the player to a provider. Returns to the game with a hash to consume. */
 export function signIn(provider) {
   if (!cloudConfigured()) return false;
-
-  if (provider === "discord") {
-    if (!DISCORD_CLIENT_ID) return false;
-    // Carried through Discord and back, and checked on return. Without it, a
-    // crafted link could drop somebody else's token into this page.
-    const state = hex(crypto.getRandomValues(new Uint8Array(16)));
-    try {
-      sessionStorage.setItem(DISCORD_STATE_KEY, state);
-    } catch {}
-    location.href = discordAuthorizeUrl(location.origin, state);
-    return true;
-  }
-
-  // Any provider added later still works through Supabase's generic redirect.
-  const url =
-    `${SUPABASE_URL}/auth/v1/authorize?provider=${encodeURIComponent(provider)}` +
-    `&redirect_to=${encodeURIComponent(REDIRECT_URL)}`;
-  location.href = url;
+  const state = hex(crypto.getRandomValues(new Uint8Array(16)));
+  try {
+    sessionStorage.setItem(CLIENT_STATE_KEY, state);
+  } catch {}
+  location.href = providerStartUrl(API_ORIGIN, provider, state);
   return true;
 }
 
 export async function signOut() {
-  const s = readSession();
-  if (s && s.access_token && cloudConfigured()) {
-    try {
-      await fetch(`${SUPABASE_URL}/auth/v1/logout`, {
-        method: "POST",
-        headers: authHeaders(s.access_token),
-      });
-    } catch {
-      /* signing out locally is what actually matters */
-    }
-  }
+  // Firebase sessions are tokens held here; dropping them is signing out.
   writeSession(null);
 }
 
-function authHeaders(token) {
-  return {
-    apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  };
-}
-
-/**
- * Called once on load. Supabase returns tokens in the URL fragment, which must
- * be consumed and scrubbed immediately - an access token sitting in the address
- * bar ends up in screenshots, history and shared links.
- */
-export async function consumeRedirect() {
-  if (!cloudConfigured()) return null;
-  const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
-  if (!hash) return null;
-  const p = new URLSearchParams(hash);
-
-  // Discord returns through our own /api/discord/callback carrying a single-use
-  // token rather than Supabase's pair, so it is handled before the generic path.
-  if (p.has("rd_otp") || p.has("rd_error")) return consumeDiscordReturn(p);
-
-  const access_token = p.get("access_token");
-  const refresh_token = p.get("refresh_token");
-  if (!access_token) return null;
-
-  history.replaceState({}, "", location.pathname + location.search);
-
-  const expires_at = Date.now() + (Number(p.get("expires_in")) || 3600) * 1000;
-  const session = { access_token, refresh_token, expires_at, user: null };
-  writeSession(session);
-
-  const user = await fetchUser(access_token);
-  if (!user) {
-    writeSession(null);
-    return null;
+/** Pure: read the uid and expiry out of a Firebase ID token without trusting it for anything else. */
+export function tokenClaims(idToken) {
+  try {
+    const body = String(idToken).split(".")[1];
+    const json = atob(body.replace(/-/g, "+").replace(/_/g, "/"));
+    const c = JSON.parse(json);
+    return { uid: c.user_id || c.sub || "", exp: Number(c.exp) || 0 };
+  } catch {
+    return { uid: "", exp: 0 };
   }
-  session.user = user;
-  return writeSession(session);
 }
 
 // A sign-in that fails must say so. A silent return to the menu looks identical
@@ -191,90 +177,82 @@ export function takeSignInError() {
   return e;
 }
 
+/** Pure: does this page address carry a sign-in result? */
+export const hasSignInHash = (hash) => /[#&](fp-auth|fp-auth-error)=/.test(String(hash || ""));
+
+/** Trade a custom token from the sign-in server for a Firebase session. */
+async function sessionFromCustomToken(token, who) {
+  const ep = await endpoints();
+  const res = await fetch(
+    `${ep.auth}identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${encodeURIComponent(ep.apiKey)}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token, returnSecureToken: true }) }
+  );
+  if (!res.ok) {
+    signInError = "verify_failed";
+    return null;
+  }
+  const j = await res.json();
+  const { uid } = tokenClaims(j.idToken);
+  if (!j.idToken || !uid) {
+    signInError = "verify_failed";
+    return null;
+  }
+  return writeSession({
+    access_token: j.idToken,
+    refresh_token: j.refreshToken || null,
+    expires_at: Date.now() + (Number(j.expiresIn) || 3600) * 1000,
+    user: {
+      id: uid,
+      email: who.email || "",
+      name: who.name || (who.email || "").split("@")[0] || "Player",
+      avatarUrl: who.photo || "",
+      provider: who.provider || "",
+    },
+  });
+}
+
 /**
- * Finish the Discord round trip: check the state, then trade the single-use
- * token for a real Supabase session.
+ * Called once on load. The sign-in result arrives in the URL fragment, which
+ * must be consumed and scrubbed immediately - a token sitting in the address
+ * bar ends up in screenshots, history and shared links.
  */
-async function consumeDiscordReturn(p) {
+export async function consumeRedirect() {
+  if (!cloudConfigured()) return null;
+  const hash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+  if (!hasSignInHash("#" + hash)) return null;
+  const p = new URLSearchParams(hash);
   history.replaceState({}, "", location.pathname + location.search);
 
   let expected = null;
   try {
-    expected = sessionStorage.getItem(DISCORD_STATE_KEY);
-    sessionStorage.removeItem(DISCORD_STATE_KEY);
+    expected = sessionStorage.getItem(CLIENT_STATE_KEY);
+    sessionStorage.removeItem(CLIENT_STATE_KEY);
   } catch {}
 
-  const err = p.get("rd_error");
+  const err = p.get("fp-auth-error");
   if (err) {
-    // "access_denied" is the player pressing Cancel, which is not a fault.
-    signInError = err === "access_denied" ? "" : err;
+    // Pressing Cancel is the player changing their mind, not a fault.
+    signInError = err === "Sign-in was cancelled." ? "" : err;
     return null;
   }
-
-  const otp = p.get("rd_otp");
-  if (!expected || p.get("rd_state") !== expected) {
+  if (!expected || p.get("cs") !== expected) {
     signInError = "state_mismatch";
     return null;
   }
-  if (!otp) {
+  const token = p.get("fp-auth");
+  if (!token) {
     signInError = "no_token";
     return null;
   }
-
   try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/verify`, {
-      method: "POST",
-      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "magiclink", token_hash: otp }),
+    return await sessionFromCustomToken(token, {
+      provider: p.get("p") || "",
+      name: p.get("n") || "",
+      email: p.get("e") || "",
+      photo: p.get("ph") || "",
     });
-    if (!res.ok) {
-      signInError = "verify_failed";
-      return null;
-    }
-    const j = await res.json();
-    if (!j.access_token) {
-      signInError = "verify_failed";
-      return null;
-    }
-
-    const session = {
-      access_token: j.access_token,
-      refresh_token: j.refresh_token || null,
-      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
-      user: null,
-    };
-    writeSession(session);
-
-    const user = await fetchUser(j.access_token);
-    if (!user) {
-      writeSession(null);
-      signInError = "profile_failed";
-      return null;
-    }
-    session.user = user;
-    return writeSession(session);
   } catch {
     signInError = "network";
-    return null;
-  }
-}
-
-async function fetchUser(token) {
-  try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, { headers: authHeaders(token) });
-    if (!res.ok) return null;
-    const u = await res.json();
-    const meta = u.user_metadata || {};
-    return {
-      id: u.id,
-      email: u.email || "",
-      name: meta.full_name || meta.name || meta.user_name || (u.email || "").split("@")[0] || "Player",
-      avatarUrl: meta.avatar_url || meta.picture || "",
-      // Discord users are minted via the admin API, so their provider is
-      // recorded in user_metadata; Google's arrives in app_metadata.
-      provider: meta.provider || (u.app_metadata && u.app_metadata.provider) || "",
-    };
-  } catch {
     return null;
   }
 }
@@ -284,40 +262,35 @@ async function validToken() {
   const s = readSession();
   if (!s || !cloudConfigured()) return null;
   if (s.expires_at && Date.now() < s.expires_at - 60000) return s.access_token;
-  if (!s.refresh_token) return s.access_token || null;
+  if (!s.refresh_token) return null;
 
   try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`, {
+    const ep = await endpoints();
+    const res = await fetch(`${ep.auth}securetoken.googleapis.com/v1/token?key=${encodeURIComponent(ep.apiKey)}`, {
       method: "POST",
-      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: s.refresh_token }),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(s.refresh_token),
     });
     if (!res.ok) {
       // Refresh token rejected - the session is genuinely dead.
-      if (res.status === 400 || res.status === 401) writeSession(null);
+      if (res.status === 400 || res.status === 401 || res.status === 403) writeSession(null);
       return null;
     }
     const j = await res.json();
     writeSession({
-      access_token: j.access_token,
+      ...s,
+      access_token: j.id_token,
       refresh_token: j.refresh_token || s.refresh_token,
-      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
-      user: s.user,
+      expires_at: Date.now() + (Number(j.expires_in) || 3600) * 1000,
     });
-    return j.access_token;
+    return j.id_token;
   } catch {
-    return s.access_token || null; // offline: try the old token, fail soft
+    return null; // offline: fail soft, the queue retries later
   }
 }
 
 // ---------------------------------------------------------------------------
-// Google sign-in without the Supabase hostname
-//
-// Supabase's generic redirect sends the player to <project-ref>.supabase.co and
-// Google prints that hostname on the consent screen. It is correct and it looks
-// exactly like phishing, so Google is handled separately: the browser gets a
-// signed ID token from Google on this origin, and only that token is handed to
-// Supabase. The player is never asked to trust a domain they did not choose.
+// Google sign-in
 //
 // This uses Google Identity Services, and that is not a preference - it is the
 // only route left. Doing it by hand with OpenID Connect's `response_type=
@@ -330,10 +303,9 @@ async function validToken() {
 // it, so it cannot sit inline beside our own. It is therefore presented in its
 // own sheet, where a Google-shaped button is exactly what a player expects.
 //
-// A per-attempt nonce carries the security: the SHA-256 goes to Google and ends
-// up inside the signed token, the raw value stays here and goes to Supabase,
-// which refuses the token unless the two agree. That is what stops a token
-// minted for another site from being replayed into this one.
+// The signed ID token goes to the sign-in server, which checks Google's
+// signature and that the token was issued for this game's client ID, then
+// returns a Firebase custom token.
 // ---------------------------------------------------------------------------
 
 const GIS_SRC = "https://accounts.google.com/gsi/client";
@@ -360,20 +332,8 @@ function loadGis() {
     el.onerror = () => reject(new Error("gsi blocked"));
     document.head.appendChild(el);
   });
-  // A failed load must not poison every later attempt - the player may simply
-  // have been offline for a moment.
   gisLoad.catch(() => { gisLoad = null; });
   return gisLoad;
-}
-
-function hex(buf) {
-  return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function makeNonce() {
-  const raw = hex(crypto.getRandomValues(new Uint8Array(16)));
-  const hashed = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw)));
-  return { raw, hashed };
 }
 
 /**
@@ -385,17 +345,13 @@ async function makeNonce() {
  */
 export async function mountGoogleButton(el, opts, onDone) {
   if (!googleIdConfigured()) throw new Error("google sign-in not configured");
-  const id = await loadGis();
-  const { raw, hashed } = await makeNonce();
+  const [id, ep] = await Promise.all([loadGis(), endpoints()]);
 
   id.initialize({
-    client_id: GOOGLE_CLIENT_ID,
-    nonce: hashed,
+    client_id: ep.googleClientId,
     auto_select: false,
     callback: (resp) => {
-      Promise.resolve(
-        resp && resp.credential ? signInWithGoogleCredential(resp.credential, raw) : null
-      ).then(onDone);
+      Promise.resolve(resp && resp.credential ? signInWithGoogleCredential(resp.credential) : null).then(onDone);
     },
   });
 
@@ -411,36 +367,21 @@ export async function mountGoogleButton(el, opts, onDone) {
 }
 
 /**
- * Trade a Google ID token for a Supabase session.
+ * Trade a Google ID token for a Firebase session, via the sign-in server.
  * @returns {Promise<object|null>} the stored session, or null if it was refused
  */
-export async function signInWithGoogleCredential(idToken, nonce) {
+export async function signInWithGoogleCredential(idToken) {
   if (!cloudConfigured() || !idToken) return null;
   try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=id_token`, {
+    const res = await fetch(`${API_ORIGIN}/api/auth/google?app=${APP}`, {
       method: "POST",
-      headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: "google", id_token: idToken, nonce }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: idToken }),
     });
     if (!res.ok) return null;
     const j = await res.json();
-    if (!j.access_token) return null;
-
-    const session = {
-      access_token: j.access_token,
-      refresh_token: j.refresh_token || null,
-      expires_at: Date.now() + (j.expires_in || 3600) * 1000,
-      user: null,
-    };
-    writeSession(session);
-
-    const user = await fetchUser(j.access_token);
-    if (!user) {
-      writeSession(null);
-      return null;
-    }
-    session.user = user;
-    return writeSession(session);
+    if (!j.token) return null;
+    return await sessionFromCustomToken(j.token, j);
   } catch {
     return null;
   }
@@ -449,25 +390,16 @@ export async function signInWithGoogleCredential(idToken, nonce) {
 // ---------------------------------------------------------------------------
 // which providers are actually switched on
 //
-// Read from the project rather than hardcoded, so a provider that gets enabled
-// in the dashboard lights up here on its own. A button that promises a login
-// the server will refuse is worse than no button.
+// Read from the sign-in server rather than hardcoded: it knows whether each
+// provider's keys are really in place. A button that promises a login the
+// server will refuse is worse than no button.
 // ---------------------------------------------------------------------------
 
-const PROVIDER_CACHE_KEY = "ruledrift.providers";
-
-/** Pure: turn Supabase's settings payload into {google: true, discord: false, ...} */
+/** Pure: turn the server's settings into {google: true, discord: false}. */
 export function providerAvailability(settings) {
-  const ext = (settings && settings.external) || {};
+  const on = (settings && settings.providers) || {};
   const out = {};
-  for (const p of PROVIDERS) out[p.id] = Boolean(ext[p.id]);
-
-  // Discord no longer signs in through Supabase's provider - it runs through
-  // our own /api/discord/callback - so Supabase's toggle no longer describes
-  // whether it works. The secret still sitting in that provider is stale, and
-  // switching the provider off (a reasonable tidy-up) would grey out a button
-  // that works perfectly. What Discord sign-in actually needs is the client ID.
-  out.discord = Boolean(DISCORD_CLIENT_ID);
+  for (const p of PROVIDERS) out[p.id] = Boolean(on[p.id]);
   return out;
 }
 
@@ -483,29 +415,30 @@ export function cachedProviders() {
 
 export async function refreshProviders() {
   if (!cloudConfigured()) return null;
+  const s = await serverSettings();
+  // Offline: fall back to whatever we last knew rather than greying out
+  // everything and looking broken.
+  if (!s) return cachedProviders();
+  const avail = providerAvailability(s);
   try {
-    const res = await fetch(`${SUPABASE_URL}/auth/v1/settings`, {
-      headers: { apikey: SUPABASE_ANON_KEY },
-    });
-    if (!res.ok) return cachedProviders();
-    const avail = providerAvailability(await res.json());
-    try {
-      localStorage.setItem(PROVIDER_CACHE_KEY, JSON.stringify(avail));
-    } catch {}
-    return avail;
-  } catch {
-    // Offline: fall back to whatever we last knew rather than greying out
-    // everything and looking broken.
-    return cachedProviders();
-  }
+    localStorage.setItem(PROVIDER_CACHE_KEY, JSON.stringify(avail));
+  } catch {}
+  return avail;
 }
 
 // ---------------------------------------------------------------------------
-// profile sync
+// profile sync: one Firestore document per player, ruledrift/{uid}, holding the
+// whole profile as a JSON string (Firestore's typed fields would only add a
+// translation layer for no benefit). The rules let only that player touch it.
 // ---------------------------------------------------------------------------
 
+async function docUrl(uid) {
+  const ep = await endpoints();
+  return `${ep.firestore}/v1/projects/${ep.projectId}/databases/(default)/documents/ruledrift/${encodeURIComponent(uid)}`;
+}
+
 /**
- * Pure: turn a read of the profiles table into a result the caller can act on.
+ * Pure: turn a read of the player's document into a result the caller can act on.
  *
  * The distinction here is the whole ball game. "There is no backup yet" and
  * "the read failed" used to both come back as null, so a fresh device whose
@@ -514,11 +447,21 @@ export async function refreshProviders() {
  * sync bug, it is data destruction, so a failure must be impossible to mistake
  * for an absence.
  *
+ * @param {number}      status  HTTP status of the read (0 if it never arrived)
+ * @param {object|null} doc     the Firestore document, when status is 200
  * @returns {{ok: boolean, data: object|null}}
  */
-export function readPullResponse(ok, rows) {
-  if (!ok) return { ok: false, data: null };
-  return { ok: true, data: rows && rows.length ? rows[0].data : null };
+export function readPullResponse(status, doc) {
+  if (status === 404) return { ok: true, data: null };
+  if (status !== 200) return { ok: false, data: null };
+  const raw = doc && doc.fields && doc.fields.data && doc.fields.data.stringValue;
+  if (typeof raw !== "string") return { ok: true, data: null };
+  try {
+    return { ok: true, data: JSON.parse(raw) };
+  } catch {
+    // A backup we cannot read is not an empty backup. Refuse to overwrite it.
+    return { ok: false, data: null };
+  }
 }
 
 /**
@@ -529,16 +472,12 @@ export function readPullResponse(ok, rows) {
 export async function pull() {
   const token = await validToken();
   const user = currentUser();
-  if (!token || !user) return readPullResponse(false);
+  if (!token || !user) return readPullResponse(0);
   try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/profiles?select=data&id=eq.${user.id}`,
-      { headers: authHeaders(token) }
-    );
-    if (!res.ok) return readPullResponse(false);
-    return readPullResponse(true, await res.json());
+    const res = await fetch(await docUrl(user.id), { headers: { Authorization: `Bearer ${token}` } });
+    return readPullResponse(res.status, res.status === 200 ? await res.json() : null);
   } catch {
-    return readPullResponse(false);
+    return readPullResponse(0);
   }
 }
 
@@ -548,16 +487,14 @@ export async function push(profile) {
   const user = currentUser();
   if (!token || !user) return false;
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/profiles`, {
-      method: "POST",
-      headers: {
-        ...authHeaders(token),
-        Prefer: "resolution=merge-duplicates,return=minimal",
-      },
+    const res = await fetch(`${await docUrl(user.id)}?updateMask.fieldPaths=data&updateMask.fieldPaths=updatedAt`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: user.id,
-        data: profile,
-        updated_at: new Date().toISOString(),
+        fields: {
+          data: { stringValue: JSON.stringify(profile) },
+          updatedAt: { timestampValue: new Date().toISOString() },
+        },
       }),
     });
     if (res.ok) {
@@ -566,6 +503,23 @@ export async function push(profile) {
       return true;
     }
     return false;
+  } catch {
+    return false;
+  }
+}
+
+/** Delete the player's cloud copy. @returns {Promise<boolean>} true once it is gone */
+export async function deleteCloud() {
+  const token = await validToken();
+  const user = currentUser();
+  if (!token || !user) return false;
+  try {
+    const res = await fetch(await docUrl(user.id), { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    if (res.ok) {
+      try { localStorage.removeItem(LAST_SYNC_KEY); } catch {}
+      clearQueue();
+    }
+    return res.ok;
   } catch {
     return false;
   }

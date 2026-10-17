@@ -7,18 +7,18 @@ import { makeRng, hashSeed, randomSeedCode, dailySeedCode } from "../src/rng.js"
 import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
 import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
-import { mergeProfiles, streaksFromDays } from "../src/storage.js";
+import { mergeProfiles, streaksFromDays, parseImport } from "../src/storage.js";
 import {
   cloudConfigured,
   PROVIDERS,
   signedIn,
   providerAvailability,
   readPullResponse,
-  discordAuthorizeUrl,
+  providerStartUrl,
+  tokenClaims,
+  hasSignInHash,
 } from "../src/cloud.js";
-import { discordProfile } from "../api/discord/callback.js";
-import { DISCORD_CLIENT_ID } from "../src/config.js";
-import { SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CLIENT_ID } from "../src/config.js";
+import { FIREBASE_API_KEY, FIREBASE_PROJECT_ID, GOOGLE_CLIENT_ID, API_ORIGIN } from "../src/config.js";
 
 let failures = 0;
 function check(name, cond, detail = "") {
@@ -408,30 +408,12 @@ console.log("\n12. Profile merge never loses or invents progress");
 
 console.log("\n13. Cloud is optional and fails soft");
 {
-  // The config is either fully present or fully absent - half-configured is the
-  // state that produces confusing runtime failures.
-  const bothOrNeither =
-    (Boolean(SUPABASE_URL) && Boolean(SUPABASE_ANON_KEY)) ||
-    (!SUPABASE_URL && !SUPABASE_ANON_KEY);
-  check("cloud config is all-or-nothing", bothOrNeither,
-    `url=${Boolean(SUPABASE_URL)} key=${Boolean(SUPABASE_ANON_KEY)}`);
-  check("cloudConfigured() matches the config", cloudConfigured() === Boolean(SUPABASE_URL && SUPABASE_ANON_KEY));
-
-  if (SUPABASE_ANON_KEY) {
-    // Shipping a service_role key in client code would hand every visitor full
-    // read/write access to every player's data, bypassing RLS entirely.
-    let role = null;
-    try {
-      const body = SUPABASE_ANON_KEY.split(".")[1];
-      if (body) role = JSON.parse(Buffer.from(body, "base64url").toString()).role;
-    } catch { /* non-JWT publishable keys have no payload to read */ }
-    check("the shipped key is NOT a service_role key",
-      role !== "service_role", `role=${role}`);
-    check("the shipped key is the anon key",
-      role === "anon" || role === null || SUPABASE_ANON_KEY.startsWith("sb_publishable_"),
-      `role=${role}`);
-    check("the project URL is https", /^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(SUPABASE_URL), SUPABASE_URL);
-  }
+  check("cloud config is all-or-nothing",
+    (Boolean(FIREBASE_API_KEY) && Boolean(FIREBASE_PROJECT_ID)) || (!FIREBASE_API_KEY && !FIREBASE_PROJECT_ID));
+  check("cloudConfigured() matches the config", cloudConfigured() === Boolean(FIREBASE_API_KEY && FIREBASE_PROJECT_ID));
+  check("the Firebase key is a public web key, not a service account",
+    /^AIza[0-9A-Za-z_-]{35}$/.test(FIREBASE_API_KEY), FIREBASE_API_KEY);
+  check("off the real site, the sign-in server is this origin (local dev)", API_ORIGIN === "");
 
   check("both OAuth providers are offered",
     PROVIDERS.length === 2 && PROVIDERS.some((p) => p.id === "google") && PROVIDERS.some((p) => p.id === "discord"),
@@ -439,27 +421,28 @@ console.log("\n13. Cloud is optional and fails soft");
   check("nobody is signed in by default", signedIn() === false);
 
   // A button that promises a login the server will refuse is worse than no
-  // button, so availability is read from the project rather than hardcoded.
-  const live = providerAvailability({ external: { discord: true, google: false, email: true } });
+  // button, so availability comes from the sign-in server, which knows.
+  const live = providerAvailability({ providers: { discord: true, google: false, github: true } });
   check("an enabled provider reads as available", live.discord === true);
   check("a provider that is off reads as unavailable", live.google === false);
-
-  // Discord is deliberately exempt: it signs in through our own callback, so
-  // Supabase's provider toggle no longer describes whether it works.
-  check("Discord stays available even if Supabase's provider is switched off",
-    providerAvailability({ external: { discord: false } }).discord === Boolean(DISCORD_CLIENT_ID));
   check("availability only covers providers we actually offer",
     Object.keys(live).sort().join(",") === "discord,google", Object.keys(live).join(","));
+  check("a missing settings payload disables every provider",
+    providerAvailability(null).google === false && providerAvailability(null).discord === false);
+
   // The bug this replaces: a failed read and an empty cloud both returned null,
   // so a fresh device that could not read would push its empty profile over a
   // real backup and destroy it. These two cases must never look alike.
-  const failed = readPullResponse(false);
-  const empty = readPullResponse(true, []);
-  const found = readPullResponse(true, [{ data: { history: [1, 2, 3] } }]);
-  check("a failed read is not ok", failed.ok === false);
-  check("an empty cloud IS ok, just empty", empty.ok === true && empty.data === null);
+  const failed = readPullResponse(0);
+  const denied = readPullResponse(403);
+  const empty = readPullResponse(404);
+  const found = readPullResponse(200, { fields: { data: { stringValue: JSON.stringify({ history: [1, 2, 3] }) } } });
+  const corrupt = readPullResponse(200, { fields: { data: { stringValue: "{not json" } } });
+  check("a failed read is not ok", failed.ok === false && denied.ok === false);
+  check("no backup yet IS ok, just empty", empty.ok === true && empty.data === null);
   check("a failed read is distinguishable from an empty cloud", failed.ok !== empty.ok);
   check("a found profile comes back intact", found.ok === true && found.data.history.length === 3);
+  check("an unreadable backup is a failure, so it is never overwritten", corrupt.ok === false);
 
   // And the merge it feeds: an empty device must inherit the cloud, never erase it.
   const restored = mergeProfiles(
@@ -470,64 +453,42 @@ console.log("\n13. Cloud is optional and fails soft");
     restored.history.length === 1 && restored.history[0].score === 90,
     JSON.stringify(restored.history));
 
-  // Google sign-in runs on our own domain via Google Identity Services, which
-  // only works if the client ID is the real one. A typo here fails silently at
-  // runtime - the button simply never appears - so assert its shape instead.
   check("the Google client ID is either unset or a real one",
     GOOGLE_CLIENT_ID === "" || /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(GOOGLE_CLIENT_ID),
     GOOGLE_CLIENT_ID || "(unset)");
 
-  // Everything that DOES depend on the Supabase payload must still fail closed.
-  check("a missing settings payload disables the Supabase-backed providers",
-    providerAvailability(null).google === false);
-  check("an empty external map disables the Supabase-backed providers",
-    providerAvailability({ external: {} }).google === false);
+  // Discord starts on the sign-in server, on our own domain, so Discord's
+  // consent screen never names a hostname the player does not recognise.
+  const dUrl = new URL(providerStartUrl("https://auth.mridulsaravanan.com", "discord", "s7"));
+  check("Discord sign-in starts on our own sign-in server",
+    dUrl.origin === "https://auth.mridulsaravanan.com" && dUrl.pathname === "/api/auth/discord", dUrl.href);
+  check("the server is told which game is asking", dUrl.searchParams.get("app") === "ruledrift");
+  check("the tab's own state is carried through", dUrl.searchParams.get("cs") === "s7");
+  check("no third-party hostname is in the start URL", !/supabase|firebaseapp|vercel\.app/.test(dUrl.href), dUrl.href);
 
-  // -------------------------------------------------------------------------
-  // Discord sign-in runs on our own domain
-  //
-  // The whole reason api/discord/callback.js exists is that Supabase's hosted
-  // redirect made Discord's consent screen announce
-  // "<project-ref>.supabase.co" to the player. If that hostname ever creeps
-  // back into the authorize URL, the bug is back and nothing else would catch
-  // it - the login would still work, it would just look untrustworthy again.
-  // -------------------------------------------------------------------------
-  const dUrl = new URL(discordAuthorizeUrl("https://ruledrift.vercel.app", "s7"));
-  const dRedirect = dUrl.searchParams.get("redirect_uri");
+  check("a sign-in result in the address is recognised",
+    hasSignInHash("#fp-auth=abc&p=discord&cs=1") && hasSignInHash("#fp-auth-error=nope") && !hasSignInHash("#seed=AAA"));
+  const fakeTok = ["e30", Buffer.from(JSON.stringify({ user_id: "u_abc", exp: 99 })).toString("base64url"), "sig"].join(".");
+  const tc = tokenClaims(fakeTok);
+  check("the player id is read from the Firebase token", tc.uid === "u_abc" && tc.exp === 99, JSON.stringify(tc));
+  check("a garbage token gives no player id", tokenClaims("nope").uid === "");
+}
 
-  check("Discord sign-in starts at Discord", dUrl.origin === "https://discord.com", dUrl.origin);
-  check("Discord is sent back to OUR domain, not Supabase's",
-    dRedirect === "https://ruledrift.vercel.app/api/discord/callback", dRedirect);
-  check("the Supabase hostname never appears on Discord's consent screen",
-    !dUrl.search.includes("supabase.co"), dUrl.search);
-  check("Discord is asked only for identity and email",
-    dUrl.searchParams.get("scope") === "identify email", dUrl.searchParams.get("scope"));
-  check("the CSRF state is carried through", dUrl.searchParams.get("state") === "s7");
-  check("the authorize URL asks for the code flow",
-    dUrl.searchParams.get("response_type") === "code");
-  check("the Discord client ID is either unset or a real snowflake",
-    DISCORD_CLIENT_ID === "" || /^[0-9]{17,20}$/.test(DISCORD_CLIENT_ID),
-    DISCORD_CLIENT_ID || "(unset)");
-
-  // The Supabase user is keyed on email, so an unverified address would let
-  // someone claim an account that is not theirs.
-  check("an unverified Discord email is refused",
-    discordProfile({ id: "1", email: "a@b.com", verified: false }) === null);
-  check("a Discord account with no email is refused",
-    discordProfile({ id: "1", username: "x" }) === null);
-
-  const dp = discordProfile({ id: "42", email: "a@b.com", verified: true, username: "mridul", avatar: "abc" });
-  check("a verified Discord account yields a profile", dp !== null);
-  check("the profile keeps the email", dp.email === "a@b.com");
-  check("the profile is tagged as discord", dp.provider === "discord");
-  check("the avatar URL is built from the account id and hash",
-    dp.avatar_url === "https://cdn.discordapp.com/avatars/42/abc.png?size=128", dp.avatar_url);
-  check("the display name falls back to the username",
-    dp.full_name === "mridul", dp.full_name);
-  check("a global name wins over the username",
-    discordProfile({ id: "42", email: "a@b.com", verified: true, username: "u", global_name: "G" }).full_name === "G");
-  check("an avatarless account yields an empty avatar, not a broken URL",
-    discordProfile({ id: "42", email: "a@b.com", verified: true, username: "u" }).avatar_url === "");
+console.log("\n14. Import merges, never replaces");
+{
+  check("non-JSON is refused with a reason", parseImport("hello").ok === false && /not Ruledrift/.test(parseImport("hello").error));
+  check("a JSON list is refused", parseImport("[1,2]").ok === false);
+  check("a damaged history is refused", parseImport('{"history": 5}').ok === false);
+  check("an export with no games is refused", parseImport("{}").ok === false);
+  const exp = JSON.stringify({ name: "M", history: [{ playedAt: 7, seed: "BBB", score: 50 }, { junk: true }], dailyResults: {}, xp: 10 });
+  const r = parseImport(exp);
+  check("a real export is accepted, junk entries dropped", r.ok === true && r.profile.history.length === 1, JSON.stringify(r));
+  const local = { history: [{ playedAt: 9, seed: "CCC", score: 70 }], dailyResults: {}, updatedAt: 5 };
+  const merged = mergeProfiles(local, r.profile);
+  check("importing keeps this device's games and adds the imported ones",
+    merged.history.length === 2 && merged.history.some((x) => x.seed === "CCC") && merged.history.some((x) => x.seed === "BBB"));
+  const again = mergeProfiles(merged, r.profile);
+  check("importing the same export twice adds nothing", again.history.length === 2);
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);

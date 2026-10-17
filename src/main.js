@@ -115,11 +115,11 @@ function footer() {
       user
         ? `Playable offline. Backed up to your account (${user.email || user.name}).`
         : "Playable offline. Nothing you play leaves this device."),
-    h("div", { style: "margin-top:4px" }, "Built by Mridul"),
+    h("div", { style: "margin-top:4px" }, "Made with AI by Mridul"),
     h("div", { class: "footer-links", style: "margin-top:6px" },
-      h("a", { href: "privacy" }, "Privacy"),
+      h("a", { href: "privacy.html" }, "Privacy"),
       " · ",
-      h("a", { href: "terms" }, "Terms")));
+      h("a", { href: "terms.html" }, "Terms")));
 }
 
 /** A small non-interactive board, used by the guide and the codex. */
@@ -358,6 +358,7 @@ function screenSettings() {
         h("button", { class: "btn btn-sm", onclick: async () => {
           toast((await copyText(store.exportProfile())) ? "Copied as JSON" : "Copy failed");
         } }, "Export"),
+        h("button", { class: "btn btn-sm", onclick: importSheet }, "Import"),
         h("button", { class: "btn btn-sm", onclick: () => {
           if (confirm("Delete all your Ruledrift history on this device? This cannot be undone.")) {
             profile = store.resetAll();
@@ -365,12 +366,27 @@ function screenSettings() {
             toast("History cleared");
             screenHome();
           }
-        } }, "Delete all"))),
+        } }, "Delete all"),
+        cloud.signedIn()
+          ? h("button", { class: "btn btn-sm", onclick: async (e) => {
+            if (!confirm("Delete the copy in your account? This device keeps its history, and you will be signed out.")) return;
+            const btn = e.currentTarget;
+            btn.textContent = "Deleting...";
+            if (await cloud.deleteCloud()) {
+              await cloud.signOut();
+              toast("Account copy deleted");
+              screenSettings();
+            } else {
+              btn.textContent = "Delete account copy";
+              toast("Could not reach your account. Nothing was deleted.", 3800);
+            }
+          } }, "Delete account copy")
+          : null)),
 
     h("div", { class: "card" },
       h("h3", {}, "About"),
       h("p", { class: "small muted", style: "margin-bottom:0" },
-        "Ruledrift is built on the Wisconsin Card Sorting Task, a real test of cognitive flexibility. It measures how fast you adapt - it does not claim to raise your IQ. Built by Mridul.")),
+        "Ruledrift is built on the Wisconsin Card Sorting Task, a real test of cognitive flexibility. It measures how fast you adapt - it does not claim to raise your IQ. Made with AI by Mridul.")),
 
     footer());
   render(wrap);
@@ -1089,6 +1105,42 @@ function googleSheet() {
   });
 }
 
+/**
+ * Paste an Export from another device or the old ruledrift.vercel.app, and
+ * merge it in. Merging (never replacing) means a stale copy cannot erase newer
+ * games; the same rules as cloud sync decide every field.
+ */
+function importSheet() {
+  const box = h("textarea", { class: "import-box", rows: "6", placeholder: "Paste the text you copied with Export", spellcheck: "false" });
+  const status = h("div", { class: "tiny muted", style: "margin-top:10px;min-height:16px" });
+  const back = h("div", { class: "sheet-back" });
+  const close = () => back.remove();
+  const card = h("div", { class: "sheet" },
+    h("div", { class: "sheet-t" }, "Import progress"),
+    h("div", { class: "sheet-s" },
+      "On the other device, open Settings, Your data, Export. Paste it here. Your games are added to the ones on this device; nothing here is lost."),
+    box,
+    status,
+    h("div", { class: "btn-row", style: "margin-top:12px;justify-content:center" },
+      h("button", { class: "btn btn-sm btn-primary", onclick: async () => {
+        const r = store.parseImport(box.value);
+        if (!r.ok) { status.textContent = r.error; return; }
+        const before = store.load();
+        const merged = store.mergeProfiles(before, r.profile);
+        profile = store.replaceLocal(merged);
+        const added = (merged.history || []).length - (before.history || []).length;
+        close();
+        toast(added > 0 ? `Imported ${added} game${added === 1 ? "" : "s"}` : "Imported - nothing new to add");
+        if (cloud.signedIn()) await syncNow({ quiet: true }).catch(() => cloud.queueSync());
+        screenSettings();
+      } }, "Import"),
+      h("button", { class: "btn btn-sm", onclick: close }, "Cancel")));
+  back.appendChild(card);
+  back.addEventListener("click", (e) => { if (e.target === back) close(); });
+  document.body.appendChild(back);
+  box.focus();
+}
+
 // Official brand marks, inlined. A red square with a "G" in it is the tell of a
 // login screen nobody should trust; the real logo is the cheapest credibility
 // on the page, and it costs one path each.
@@ -1117,8 +1169,8 @@ function providerButtons() {
         // let someone try than to block a login that would have worked.
         const off = avail ? avail[p.id] === false : false;
 
-        // Google goes straight to Google from this origin; everything else
-        // still routes through Supabase's redirect.
+        // Google opens its own sheet (Google's button); Discord goes by redirect
+        // through the sign-in server.
         const start = () => {
           if (p.id === "google" && cloud.googleIdConfigured()) googleSheet();
           else cloud.signIn(p.id);
@@ -1347,19 +1399,13 @@ function screenStats() {
 
 /** Plain-language version of a sign-in failure code. */
 const SIGN_IN_ERRORS = {
-  server_not_configured: "the server is missing its Discord keys",
-  discord_token: "Discord would not confirm the login",
-  discord_user: "Discord would not share your account",
-  discord_no_email: "that Discord account has no verified email address",
-  session_mint: "the account service refused the sign-in",
-  state_mismatch: "the sign-in did not start in this tab",
-  verify_failed: "the sign-in token had already expired",
-  profile_failed: "your account could not be read back",
-  network: "the network dropped",
-  no_code: "Discord sent us back without a login",
-  no_token: "Discord sent us back without a login",
+  state_mismatch: "Sign-in failed - it did not start in this tab",
+  verify_failed: "Sign-in failed - the sign-in token had already expired",
+  network: "Sign-in failed - the network dropped",
+  no_token: "Sign-in failed - the provider sent us back without a login",
 };
 
+/** Our own codes get a sentence; the sign-in server already speaks in sentences. */
 function signInErrorText(code) {
   return SIGN_IN_ERRORS[code] || code;
 }
@@ -1368,11 +1414,8 @@ async function boot() {
   // An OAuth return must be handled before anything renders, so the player
   // lands on a signed-in screen rather than seeing a flash of signed-out UI.
   let justSignedIn = false;
-  // Two shapes arrive here: Supabase's own #access_token, and #rd_otp from our
-  // Discord callback. Gating on access_token alone would silently ignore every
-  // Discord sign-in.
-  const hadOAuthHash = /[#&](access_token|rd_otp|rd_error)=/.test(location.hash);
-  const hadSupabaseHash = location.hash.includes("access_token");
+  // The sign-in server returns #fp-auth=<token> (or #fp-auth-error=<reason>).
+  const hadOAuthHash = cloud.hasSignInHash(location.hash);
   if (cloud.cloudConfigured() && hadOAuthHash) {
     try {
       justSignedIn = Boolean(await cloud.consumeRedirect());
@@ -1390,8 +1433,7 @@ async function boot() {
       // Pressing Cancel is not a fault and gets no scolding. A real failure
       // names itself, because "sign-in failed" hides the reason it failed.
       const err = cloud.takeSignInError();
-      if (err) toast(`Sign-in failed - ${signInErrorText(err)}`, 3800);
-      else if (hadSupabaseHash) toast("Sign-in failed. You can keep playing without an account.");
+      if (err) toast(signInErrorText(err), 4200);
     }
   } else if (cloud.signedIn() && (cloud.hasQueued() || navigator.onLine !== false)) {
     // Returning signed-in player: sync quietly in the background, never block.

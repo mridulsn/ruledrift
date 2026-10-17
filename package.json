@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "license": "MIT",
-  "homepage": "https://ruledrift.vercel.app",
+  "homepage": "https://mridulsaravanan.com/ruledrift/",
   "repository": {
     "type": "git",
     "url": "https://github.com/mridulsn/ruledrift.git"
@@ -13,9 +13,8 @@
   "keywords": ["game", "pwa", "offline", "cognitive", "wisconsin-card-sorting"],
   "scripts": {
     "test": "node tools/selftest.mjs",
-    "start": "python -m http.server 8777",
-    "icons": "python tools/make_icons.py",
-    "deploy": "vercel deploy --prod --yes"
+    "start": "python -m http.server 8796 --bind 127.0.0.1",
+    "icons": "python tools/make_icons.py"
   },
   "comment": "There are deliberately no dependencies and no build step. This file only exists to give the commands a home - `npm install` is not needed and does nothing.",
   "engines": {

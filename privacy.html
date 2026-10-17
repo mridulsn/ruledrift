@@ -15,7 +15,7 @@
   <a class="back" href="./">&larr; Back to Ruledrift</a>
 
   <h1>Privacy Policy</h1>
-  <p class="meta">Ruledrift &middot; last updated 5 September 2026</p>
+  <p class="meta">Ruledrift &middot; last updated 17 October 2026</p>
 
   <p>Ruledrift is a small brain game built by one person. This policy describes
      exactly what the game does with your data - not what a template says a
@@ -39,9 +39,10 @@
   <h2>If you sign in</h2>
   <p>Signing in is optional and exists for one purpose: backing up your progress
      so it survives a cleared browser and follows you between devices. Sign-in
-     is handled by Google or Discord through
-     <a href="https://supabase.com" rel="noopener">Supabase</a>, which provides
-     the authentication and database for this game.</p>
+     is handled by Google or Discord. Once they confirm who you are, a small
+     sign-in server at auth.mridulsaravanan.com signs you in to
+     <a href="https://firebase.google.com" rel="noopener">Google Firebase</a>,
+     which provides the accounts and database for this game.</p>
   <p><strong>What is stored when you are signed in:</strong></p>
   <ul>
     <li>Your email address and display name, as supplied by Google or Discord.</li>
@@ -52,14 +53,15 @@
      Google and Discord handle that entirely), your contacts, your posts, your
      location, your device identifiers, and any information from your Google or
      Discord account beyond your email address and display name.</p>
-  <p>Your data sits in a single row that only your own signed-in account can
-     read or write. This is enforced by database row-level security, not merely
-     by application code.</p>
+  <p>Your data sits in a single record that only your own signed-in account can
+     read or write. This is enforced by the database's own security rules, not
+     merely by application code.</p>
 
   <h2>What we do not do</h2>
   <ul>
     <li>No advertising, and no advertising identifiers.</li>
-    <li>No analytics, no tracking pixels, no third-party scripts.</li>
+    <li>No analytics and no tracking pixels. The only outside script is Google's
+        own sign-in button, and it loads only when you choose Google.</li>
     <li>No selling, renting or sharing of your data with anyone.</li>
     <li>No email marketing. Signing in does not subscribe you to anything.</li>
   </ul>
@@ -77,10 +79,11 @@
   <h2>Deleting your data</h2>
   <p>The game has a real delete button, not a request form:</p>
   <ul>
-    <li><strong>On your device:</strong> Profile &rarr; Data &rarr; delete your
-        history. This wipes local storage immediately.</li>
-    <li><strong>In the cloud:</strong> deleting your account removes your row
-        entirely. You can also revoke Ruledrift's access at any time from your
+    <li><strong>On your device:</strong> Settings &rarr; Your data &rarr; Delete
+        all. This wipes local storage immediately.</li>
+    <li><strong>In the cloud:</strong> Settings &rarr; Your data &rarr; Delete
+        account copy removes your backup entirely. You can also revoke
+        Ruledrift's access at any time from your
         <a href="https://myaccount.google.com/permissions" rel="noopener">Google
         account permissions</a> page or your Discord authorised apps page.</li>
   </ul>
