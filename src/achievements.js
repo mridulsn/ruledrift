@@ -10,6 +10,10 @@
 //    cleanly, showing up. Manufactured goals ("tap 500 times") produce a spike and
 //    then nothing.
 
+import { RULES } from "./rules.js";
+
+const CORE_IDS = new Set(RULES.map((r) => r.id));
+
 export const RANKS = [
   { at: 0, name: "Drifter" },
   { at: 2000, name: "Pattern Seeker" },
@@ -54,44 +58,50 @@ function oneOff(id, name, icon, desc, test) {
 }
 
 export const ACHIEVEMENTS = [
-  tiered("adapt", "Quick Study", "\u{1F504}", "Rule changes you recovered from",
+  tiered("adapt", "Quick Study", "adapt", "Rule changes you recovered from",
     [5, 25, 100], (s) => s.adaptations, ""),
-  tiered("sessions", "Regular", "\u{1F3AE}", "Sessions played",
+  tiered("sessions", "Regular", "stone", "Sessions played",
     [1, 10, 50], (s) => s.sessions, ""),
-  tiered("streakdays", "Habit", "\u{1F525}", "Longest daily streak",
+  tiered("streakdays", "Habit", "flame", "Longest daily streak",
     [3, 7, 30], (s) => s.longestStreak, " days"),
-  tiered("runstreak", "On A Roll", "\u{26A1}", "Best answer streak in one run",
+  tiered("runstreak", "On A Roll", "bolt", "Best answer streak in one run",
     [8, 20, 40], (s) => s.bestRunStreak, ""),
-  tiered("brain", "Sharp", "\u{1F9E0}", "Best brain score",
+  tiered("brain", "Sharp", "spark", "Best brain score",
     [50, 70, 85], (s) => s.bestBrain, ""),
 
-  oneOff("clean", "Clean Switch", "\u{2728}",
+  oneOff("clean", "Clean Switch", "sparkle",
     "Finish a run with at least 3 rule changes and zero perseverative errors",
     (s, r) => r && r.ruleChanges >= 3 && r.perseverativeErrors === 0),
-  oneOff("flying", "Flying Start", "\u{1F680}",
+  oneOff("flying", "Flying Start", "rocket",
     "Get your first 10 answers right in one run",
     (s, r) => r && r.log && r.log.length >= 10 && r.log.slice(0, 10).every((t) => t.c === 1)),
-  oneOff("instant", "Instant Read", "\u{1F440}",
+  oneOff("instant", "Instant Read", "eye",
     "Average under 1.2 seconds across a run of 15 or more",
     (s, r) => r && r.trials >= 15 && r.meanRt > 0 && r.meanRt < 1200),
-  oneOff("zen", "Unhurried", "\u{1F9D8}",
+  oneOff("zen", "Unhurried", "lotus",
     "Finish a Zen run at 90% accuracy or better",
     (s, r) => r && r.mode === "zen" && r.trials >= 12 && r.accuracy >= 0.9),
-  oneOff("blitz", "Under Pressure", "\u{1F3C1}",
+  oneOff("blitz", "Under Pressure", "flag",
     "Score 2,500 or more in Blitz",
     (s, r) => r && r.mode === "blitz" && r.score >= 2500),
-  oneOff("gauntlet", "Whiplash", "\u{1F300}",
+  oneOff("gauntlet", "Whiplash", "spiral",
     "Survive 8 rule changes in one Gauntlet run",
     (s, r) => r && r.mode === "gauntlet" && r.ruleChanges >= 8),
-  oneOff("duelist", "Duelist", "\u{2694}",
+  oneOff("duelist", "Duelist", "swords",
     "Compare results with a friend",
     (s) => s.duels >= 1),
-  oneOff("codex", "Completionist", "\u{1F4DA}",
+  oneOff("codex", "Completionist", "codex",
     "Encounter all eight rules",
     (s) => s.rulesSeen >= 8),
-  oneOff("comeback", "Second Wind", "\u{1F4AA}",
+  oneOff("comeback", "Second Wind", "wind",
     "Reach a streak of 10 after already losing two lives",
     (s, r) => r && r.comeback === true),
+  oneOff("bossbreaker", "Bossbreaker", "crown",
+    "Beat a boss in Drift Run",
+    (s, r) => r && r.mode === "run" && r.bossesBeaten >= 1),
+  oneOff("deep", "Out of the Deep", "gem",
+    "Clear all three acts of one Drift Run",
+    (s, r) => r && r.mode === "run" && r.won === true),
 ];
 
 export const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
@@ -107,7 +117,9 @@ export function lifetimeStats(profile) {
     bestBrain: profile.bestBrain || 0,
     bestScore: profile.bestScore || 0,
     duels: (profile.duels || []).length,
-    rulesSeen: Object.keys(profile.ruleStats || {}).length,
+    // Only the eight core rules count: boss rules are Drift Run extras and must
+    // not quietly complete "encounter all eight".
+    rulesSeen: Object.keys(profile.ruleStats || {}).filter((id) => CORE_IDS.has(id)).length,
     totalTrials: h.reduce((a, r) => a + (r.trials || 0), 0),
     totalCorrect: h.reduce((a, r) => a + (r.correct || 0), 0),
     xp: profile.xp || 0,
@@ -176,13 +188,19 @@ export function achievementRows(profile) {
   return rows;
 }
 
-/** Human label for a flat id, used by the unlock toast. */
+/** Human label for a flat id, used by the unlock list. The icon is drawn separately. */
 export function labelFor(flatId) {
   const [base, step] = flatId.split(".");
   const a = ACH_BY_ID[base];
   if (!a) return flatId;
-  if (!step) return `${a.icon} ${a.name}`;
-  return `${a.icon} ${a.name} ${"I".repeat(Number(step))}`;
+  if (!step) return a.name;
+  return `${a.name} ${"I".repeat(Number(step))}`;
+}
+
+/** Icon name for a flat id. */
+export function iconFor(flatId) {
+  const a = ACH_BY_ID[String(flatId).split(".")[0]];
+  return a ? a.icon : "spark";
 }
 
 /** XP is just score earned, so the ladder tracks real play. */

@@ -2,11 +2,17 @@
 // Checks the invariants that make the game fair and the duel honest.
 
 import { Game } from "../src/engine.js";
-import { generateTrial, evaluateRule, RULES, rulesUpToTier, ruleNeedsPrev } from "../src/rules.js";
+import {
+  generateTrial, evaluateRule, RULES, rulesUpToTier, ruleNeedsPrev,
+  BOSS_RULES, isBossRule, shortcutHits, constructTrial, ruleFamilies,
+} from "../src/rules.js";
+import {
+  DriftRun, buildRunMap, dailyRunSeed, findDailyRun, isDailyRunSeed, STEPS_PER_ACT, PERKS, MAX_HEARTS,
+} from "../src/driftrun.js";
 import { makeRng, hashSeed, randomSeedCode, dailySeedCode } from "../src/rng.js";
 import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
 import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
-import { rankFor, achievementRows, lifetimeStats } from "../src/achievements.js";
+import { rankFor, achievementRows, lifetimeStats, xpFor } from "../src/achievements.js";
 import { mergeProfiles, streaksFromDays, parseImport } from "../src/storage.js";
 import {
   cloudConfigured,
@@ -489,6 +495,357 @@ console.log("\n14. Import merges, never replaces");
     merged.history.length === 2 && merged.history.some((x) => x.seed === "CCC") && merged.history.some((x) => x.seed === "BBB"));
   const again = mergeProfiles(merged, r.profile);
   check("importing the same export twice adds nothing", again.history.length === 2);
+}
+
+console.log("\n15. The classic game is untouched by Drift Run");
+{
+  // A fingerprint of 60 classic games (5 modes x 4 seeds x 3 tiers), taken from
+  // the engine before Drift Run existed. If this moves, old seeds, old duels and
+  // old dailies would no longer replay the same boards.
+  let acc = "";
+  for (const mode of ["quick", "daily", "zen", "blitz", "gauntlet"]) for (const seed of ["K7F2QM", "DAILY-20261017", "AB12CD", "ZZZZZZ"]) for (const tier of [1, 2, 3]) {
+    const g = new Game({ seed, mode, maxTier: tier });
+    let n = 0;
+    while (!g.over && n++ < 150) {
+      const t = g.trial;
+      acc += t.tiles.map((x) => x.shape[0] + x.color[0] + x.count).join("") + t.target + t.rule[0];
+      g.answer(n % 7 === 3 ? (t.target + 1) % 5 : t.target, 900);
+    }
+    acc += "|" + g.score;
+  }
+  check("classic boards are byte-identical to before Drift Run", hashSeed(acc).toString(16) === "1ab5529",
+    hashSeed(acc).toString(16));
+  check("the normal rule pool never contains a boss rule",
+    [1, 2, 3].every((t) => rulesUpToTier(t).every((r) => !isBossRule(r.id))));
+  check("there are still exactly eight core rules", RULES.length === 8 && BOSS_RULES.length === 3);
+}
+
+// Independent oracle: which tiles satisfy each rule's defining property. Written
+// separately from evaluateRule, so a bug in one cannot hide in the other.
+function oracle(rule, tiles, prev) {
+  const idx = [0, 1, 2, 3, 4];
+  const countOf = (key) => (i) => tiles.filter((t) => t[key] === tiles[i][key]).length;
+  const colourN = countOf("color");
+  const shapeN = countOf("shape");
+  const counts = tiles.map((t) => t.count);
+  switch (rule) {
+    case "MOST_PIPS": return idx.filter((i) => counts[i] === Math.max(...counts));
+    case "FEWEST_PIPS": return idx.filter((i) => counts[i] === Math.min(...counts));
+    case "UNIQUE_COLOR": return idx.filter((i) => colourN(i) === 1);
+    case "UNIQUE_SHAPE": return idx.filter((i) => shapeN(i) === 1);
+    case "ODD_PARITY": return idx.filter((i) => tiles.filter((t) => t.count % 2 === tiles[i].count % 2).length === 1);
+    case "MATCH_LAST_COLOR": return prev ? idx.filter((i) => tiles[i].color === prev.color) : [];
+    case "MATCH_LAST_SHAPE": return prev ? idx.filter((i) => tiles[i].shape === prev.shape) : [];
+    case "SHARES_NOTHING": return prev ? idx.filter((i) => tiles[i].color !== prev.color && tiles[i].shape !== prev.shape) : [];
+    case "BOSS_DOUBLE_LONER": return idx.filter((i) => colourN(i) === 1 && shapeN(i) === 1);
+    case "BOSS_RICH_TWIN": {
+      const pairColours = [...new Set(tiles.map((t) => t.color))].filter((c) => tiles.filter((t) => t.color === c).length === 2);
+      if (pairColours.length !== 1) return [];
+      const tw = idx.filter((i) => tiles[i].color === pairColours[0]);
+      return tw.filter((i) => tw.every((j) => j === i || tiles[i].count > tiles[j].count));
+    }
+    case "BOSS_HUMBLE_LONER": {
+      const lone = idx.filter((i) => shapeN(i) === 1);
+      if (lone.length < 2) return [];
+      return lone.filter((i) => lone.every((j) => j === i || tiles[i].count < tiles[j].count));
+    }
+    default: return [];
+  }
+}
+
+/**
+ * Plays a whole Drift Run. `style` decides the taps: "perfect" always right,
+ * "sloppy" mostly right with deliberate old-rule mistakes, "bad" always tile 0.
+ * `onTrial` sees every board before it is answered.
+ */
+function playRun(seed, { style = "perfect", rng = null, onTrial = null, daily = false } = {}) {
+  const run = new DriftRun({ seed, daily });
+  let guard = 0;
+  while (!run.over && guard++ < 6000) {
+    if (run.phase === "map") {
+      const opts = run.options();
+      run.enter(opts[rng ? rng.int(opts.length) : 0].id);
+    } else if (run.phase === "perk") {
+      run.pickPerk(run.perkOffer[rng ? rng.int(run.perkOffer.length) : 0]);
+    } else if (run.phase === "room") {
+      const g = run.game;
+      const t = g.trial;
+      if (onTrial) onTrial(run, g, t);
+      let pick = t.target;
+      if (style === "bad") pick = 0;
+      else if (style === "sloppy") {
+        const roll = rng.next();
+        const old = g.previousRule ? t.answers[g.previousRule] : -1;
+        if (roll < 0.12 && old >= 0) pick = old;
+        else if (roll < 0.2) pick = rng.int(5);
+      }
+      run.answer(pick, 700 + (rng ? rng.int(500) : 0));
+    }
+  }
+  return run;
+}
+
+console.log("\n16. Drift Run maps");
+{
+  let badShape = 0, nonDeterministic = 0, distinct = new Set();
+  for (let i = 0; i < 500; i++) {
+    const seed = "MAP" + i;
+    const m = buildRunMap(seed);
+    if (JSON.stringify(m) !== JSON.stringify(buildRunMap(seed))) nonDeterministic++;
+    distinct.add(JSON.stringify(m.acts.map((a) => a.steps.map((s) => s.map((n) => n.type)))));
+    if (m.acts.length !== 3 || m.length !== 12) badShape++;
+    for (const a of m.acts) {
+      if (a.steps.length !== STEPS_PER_ACT || a.boss.type !== "boss") badShape++;
+      let rests = 0;
+      for (const s of a.steps) {
+        if (s.length !== 2 || s[0].type === s[1].type) badShape++;
+        rests += s.filter((n) => n.type === "rest").length;
+      }
+      if (rests !== 1) badShape++;
+    }
+    const first = m.acts[0].steps[0].map((n) => n.type).sort().join(",");
+    if (first !== "elite,room") badShape++;
+  }
+  check("every map is 3 acts of 3 left/right steps plus a boss (500 maps)", badShape === 0, `bad=${badShape}`);
+  check("every act has exactly one campfire, and every choice is a real choice", badShape === 0);
+  check("the same seed always draws the same map", nonDeterministic === 0, `diff=${nonDeterministic}`);
+  check("different seeds draw different maps", distinct.size > 20, `distinct=${distinct.size}`);
+
+  const d1 = dailyRunSeed(new Date(2026, 9, 17, 0, 5));
+  const d1b = dailyRunSeed(new Date(2026, 9, 17, 23, 55));
+  const d2 = dailyRunSeed(new Date(2026, 9, 18));
+  check("the Daily Run seed is the same all day", d1 === d1b && d1 === "RUN-20261017", d1);
+  check("the Daily Run seed changes the next day", d1 !== d2);
+  check("the Daily Run is not the classic Daily", d1 !== dailySeedCode(new Date(2026, 9, 17)) && isDailyRunSeed(d1) && !isDailyRunSeed("K7F2QM"));
+}
+
+console.log("\n17. Drift Run boards are always fair");
+{
+  const tally = { room: 0, elite: 0, boss: 0, bossRule: 0, switches: 0, bossSwitches: 0 };
+  const byBoss = {};
+  let unsolvable = 0, notExactlyOne = 0, invisible = 0, shortcut = 0, staleEcho = 0;
+  const onTrial = (run, g, t) => {
+    tally[run.node.type]++;
+    const prev = g.prevTarget;
+    const hits = oracle(t.rule, t.tiles, prev);
+    if (t.target < 0 || t.target > 4 || evaluateRule(t.rule, t.tiles, prev) !== t.target) unsolvable++;
+    if (hits.length !== 1 || hits[0] !== t.target) notExactlyOne++;
+    if (ruleNeedsPrev(t.rule) && !prev) staleEcho++;
+    if (isBossRule(t.rule)) {
+      tally.bossRule++;
+      byBoss[t.rule] = (byBoss[t.rule] || 0) + 1;
+      if (shortcutHits(t.rule, t.tiles, prev, t.target)) shortcut++;
+    }
+    if (t.isSwitchTrial) {
+      tally.switches++;
+      if (isBossRule(t.rule) || isBossRule(g.previousRule)) tally.bossSwitches++;
+      if (evaluateRule(g.previousRule, t.tiles, prev) === t.target) invisible++;
+    }
+  };
+  const rng = makeRng(hashSeed("run-fair"));
+  let wins = 0, deaths = 0;
+  for (let i = 0; i < 500; i++) {
+    const r = playRun("FAIR" + i, { style: i % 2 ? "sloppy" : "perfect", rng, onTrial });
+    if (r.won) wins++; else deaths++;
+  }
+  const boards = tally.room + tally.elite + tally.boss;
+  check(`every Drift Run board has exactly one correct tile (${boards} boards, 500 runs)`, unsolvable === 0 && notExactlyOne === 0,
+    `unsolvable=${unsolvable} notOne=${notExactlyOne}`);
+  check(`every node type was really played (room ${tally.room}, elite ${tally.elite}, boss ${tally.boss})`,
+    tally.room > 1000 && tally.elite > 1000 && tally.boss > 1000);
+  check(`all three boss rules were dealt (${Object.entries(byBoss).map(([k, v]) => k.slice(5) + " " + v).join(", ")})`,
+    BOSS_RULES.every((b) => (byBoss[b.id] || 0) > 200));
+  check("no boss board can be won with a one-attribute idea", shortcut === 0, `shortcut=${shortcut}`);
+  check(`a rule change is never invisible (${tally.switches} changes, ${tally.bossSwitches} into or out of a boss rule)`,
+    invisible === 0 && tally.bossSwitches > 500, `invisible=${invisible}`);
+  check("no echo rule without a previous winner in any room", staleEcho === 0, `bad=${staleEcho}`);
+  check(`perfect runs clear the run, sloppy ones can fail (${wins} won, ${deaths} lost)`, wins >= 250 && deaths > 0);
+
+  // The constructive fallback, driven directly: it must be just as fair.
+  const frng = makeRng(hashSeed("fallback"));
+  let fbad = 0;
+  for (const b of BOSS_RULES) for (let i = 0; i < 3000; i++) {
+    const { tiles, target } = constructTrial(frng, b.id, null);
+    const hits = oracle(b.id, tiles, null);
+    if (hits.length !== 1 || hits[0] !== target || shortcutHits(b.id, tiles, null, target)) fbad++;
+  }
+  check("the boss-board fallback builder is fair too (9000 boards)", fbad === 0, `bad=${fbad}`);
+
+  // Every boss rule against every core rule, both directions, with and without a previous winner.
+  const srng = makeRng(hashSeed("boss-switch"));
+  let sbad = 0, sn = 0;
+  for (const b of BOSS_RULES) for (const r of RULES) for (let i = 0; i < 120; i++) {
+    const prev = i % 2 ? { shape: srng.pick(["circle", "square", "triangle", "diamond", "hex"]), color: srng.pick(["cyan", "amber", "magenta", "lime", "violet"]), count: 3 } : null;
+    if (ruleNeedsPrev(r.id) && !prev) continue;
+    for (const [now, old] of [[b.id, r.id], [r.id, b.id]]) {
+      const g = generateTrial(srng, now, prev, old);
+      sn++;
+      const hits = oracle(now, g.tiles, prev);
+      if (hits.length !== 1 || hits[0] !== g.target || evaluateRule(old, g.tiles, prev) === g.target) sbad++;
+    }
+  }
+  check(`boss <-> core rule switches stay fair and visible (${sn} switches)`, sbad === 0, `bad=${sbad}`);
+}
+
+console.log("\n18. Drift Run is deterministic");
+{
+  const fp = (seed) => {
+    const out = [];
+    const r = playRun(seed, {
+      style: "sloppy", rng: makeRng(hashSeed("same-hands")),
+      onTrial: (run, g, t) => out.push(run.node.id + ":" + t.tiles.map((x) => x.shape[0] + x.color[0] + x.count).join("") + t.target),
+    });
+    return JSON.stringify([out, r.score, r.path, r.taken, r.hearts]);
+  };
+  check("the same seed and the same taps give the identical run", fp("SAMESEED") === fp("SAMESEED"));
+  check("a different seed gives a different run", fp("SAMESEED") !== fp("OTHERSEED"));
+
+  // A room's boards depend only on the seed and the room, never on the path taken to it.
+  const a = new DriftRun({ seed: "PATHS" });
+  const b = new DriftRun({ seed: "PATHS" });
+  a.enter(a.options()[0].id);
+  b.enter(b.options()[0].id);
+  check("two players entering the same room see the same first board",
+    JSON.stringify(a.trial.tiles) === JSON.stringify(b.trial.tiles));
+  const bossA = new DriftRun({ seed: "BOSSPATH" });
+  const bossB = new DriftRun({ seed: "BOSSPATH" });
+  const walk = (run, lane) => {
+    while (run.step < STEPS_PER_ACT) {
+      if (run.phase === "map") run.enter(run.options()[Math.min(lane, run.options().length - 1)].id);
+      else if (run.phase === "perk") run.pickPerk(run.perkOffer[0]);
+      else run.answer(run.trial.target, 800);
+    }
+    run.enter(run.options()[0].id);
+    return run.trial.tiles;
+  };
+  check("the act-one boss deals the same first board whichever path led there",
+    JSON.stringify(walk(bossA, 0)) === JSON.stringify(walk(bossB, 1)));
+  check("a boss room opens on its boss rule", bossA.game.currentRule === "BOSS_DOUBLE_LONER", bossA.game.currentRule);
+}
+
+console.log("\n19. Hearts, perks and the end of a run");
+{
+  const bad = playRun("BADRUN", { style: "bad" });
+  check("a bad player loses every heart and the run ends", bad.over && !bad.won && bad.hearts <= 0 && bad.phase === "over");
+  const good = playRun("GOODRUN", { style: "perfect" });
+  check("a perfect player clears all 12 nodes and wins", good.won && good.depth === 12 && good.bossesBeaten === 3,
+    `depth=${good.depth} bosses=${good.bossesBeaten}`);
+
+  const r = good.result();
+  check("a run result is a normal history record", r.mode === "run" && r.seed === "GOODRUN" && typeof r.playedAt === "number" &&
+    r.log.length === r.trials && r.accuracy === 1 && r.brainScore >= 0 && r.brainScore <= 100 && r.level === 12);
+  check("a run result carries depth, bosses and perks", r.depth === 12 && r.length === 12 && r.won === true &&
+    r.bossesBeaten === 3 && Array.isArray(r.perks) && r.perks.length >= 3, JSON.stringify({ d: r.depth, p: r.perks }));
+  check("boss rules show up in the run's per-rule tally", BOSS_RULES.some((b) => r.byRule[b.id]));
+  check("a lost run reports where it stopped", bad.result().depth < 12 && bad.result().won === false);
+
+  // The first board of every room is a free look: you cannot know a rule you have not seen.
+  const fresh = new DriftRun({ seed: "FREEFIRST" });
+  fresh.enter(fresh.options()[0].id);
+  const t0 = fresh.trial;
+  fresh.answer((t0.target + 1) % 5, 800);
+  check("a wrong first board in a room costs no heart", fresh.hearts === 3, `hearts=${fresh.hearts}`);
+  const t1 = fresh.trial;
+  fresh.answer((t1.target + 1) % 5, 800);
+  check("a wrong board after that does", fresh.hearts === 2, `hearts=${fresh.hearts}`);
+
+  // Shield: forgive exactly one perseverative error.
+  let shieldOk = false, shieldSecond = false, tried = 0;
+  for (let i = 0; i < 200 && !shieldOk; i++) {
+    const run = new DriftRun({ seed: "SHIELD" + i });
+    run.perks.shield = 1;
+    run.enter(run.options()[0].id);
+    let guard = 0, hits = 0;
+    while (run.phase === "room" && guard++ < 60) {
+      const g = run.game;
+      const t = g.trial;
+      const old = g.previousRule ? t.answers[g.previousRule] : -1;
+      if (!t.isSwitchTrial && g.previousRule && old >= 0 && old !== t.target) {
+        tried++;
+        const before = run.hearts;
+        const rec = run.answer(old, 800);
+        hits++;
+        if (hits === 1) shieldOk = rec.perseverative && rec.shielded && run.hearts === before && run.perks.shield === 0;
+        if (hits === 2) { shieldSecond = rec.perseverative && !rec.shielded && run.hearts === before - 1; break; }
+      } else run.answer(t.target, 800);
+    }
+    if (!shieldSecond) shieldOk = false;
+  }
+  check("a shield forgives one stuck-on-the-old-rule mistake, and only one", shieldOk && shieldSecond, `tried=${tried}`);
+
+  // Perk offers and their effects, over many seeds.
+  let sawHeart = false, heartOk = true, sawSlow = false, slowOk = true, campMend = true, offersOk = true, peekOk = true;
+  for (let i = 0; i < 300; i++) {
+    const rng = makeRng(hashSeed("perk" + i));
+    const run = new DriftRun({ seed: "PERK" + i });
+    let guard = 0;
+    while (!run.over && guard++ < 3000) {
+      if (run.phase === "map") run.enter(run.options()[rng.int(2) % run.options().length].id);
+      else if (run.phase === "perk") {
+        const offer = run.perkOffer;
+        if (offer.length !== 3 || new Set(offer).size !== 3 || !offer.every((p) => PERKS[p])) offersOk = false;
+        if (run.node.type === "rest" && run.hearts < run.maxHearts && !offer.includes("mend")) campMend = false;
+        const pick = offer.includes("heart") && i % 2 ? "heart" : offer.includes("slow") ? "slow" : offer[rng.int(3)];
+        const before = { max: run.maxHearts, hearts: run.hearts };
+        run.pickPerk(pick);
+        if (pick === "heart") {
+          sawHeart = true;
+          if (run.maxHearts !== Math.min(MAX_HEARTS, before.max + 1) || run.hearts !== Math.min(run.maxHearts, before.hearts + 1)) heartOk = false;
+        }
+        if (pick === "slow") sawSlow = true;
+      } else {
+        const g = run.game;
+        if (run.perks.slow && run.node.act === 1 && run.node.type === "room" && g.timeLimitMs !== 22500) slowOk = false;
+        if (!run.perks.slow && run.node.act === 1 && run.node.type === "room" && g.timeLimitMs !== 15000) slowOk = false;
+        if (run.node.act === 0 && g.timed) slowOk = false;
+        if (run.perks.peek > 0 && rng.next() < 0.3) {
+          const fam = run.usePeek();
+          if (!fam || !fam.length || JSON.stringify(fam) !== JSON.stringify(ruleFamilies(g.currentRule))) peekOk = false;
+        }
+        run.answer(rng.next() < 0.9 ? g.trial.target : rng.int(5), 800);
+      }
+    }
+  }
+  check("every perk offer is three different real perks", offersOk);
+  check("a campfire always offers Mend to a hurt player", campMend);
+  check("Extra heart adds a full heart", sawHeart && heartOk);
+  check("act one has no clock; Slow clock stretches the act-two clock from 15s to 22.5s", sawSlow && slowOk);
+  check("a peek names the attribute family of the secret, and nothing more", peekOk);
+  const np = new DriftRun({ seed: "NOPEEK" });
+  np.enter(np.options()[0].id);
+  check("a peek with none left reveals nothing", np.usePeek() === null);
+}
+
+console.log("\n20. Drift Run results sync like every other game");
+{
+  const runA = playRun("SYNC-A", { style: "perfect" }).result();
+  runA.playedAt = 1000;
+  const runB = playRun(dailyRunSeed(new Date(2026, 9, 17)), { style: "sloppy", rng: makeRng(hashSeed("sb")), daily: true }).result();
+  runB.playedAt = 2000;
+  const quick = autoplay("SYNC-Q", 2).result();
+  quick.playedAt = 1500;
+  const sum = (h) => h.reduce((s, r) => s + xpFor(r), 0);
+  const mk = (history, updatedAt) => ({ history, dailyResults: {}, duels: [], ruleStats: {}, unlocked: [], updatedAt, xp: sum(history), bestScore: Math.max(0, ...history.map((r) => r.score)) });
+  const laptop = mk([runA, quick], 10);
+  const phone = mk([runB, quick], 20);
+  const m = mergeProfiles(laptop, phone);
+  check("merge keeps both runs and the shared quick game once", m.history.length === 3 &&
+    m.history.filter((r) => r.mode === "run").length === 2);
+  check("merged XP is recomputed from history, never summed", m.xp === sum(m.history), `${m.xp} vs ${sum(m.history)}`);
+  const again = mergeProfiles(mergeProfiles(m, phone), laptop);
+  check("merging runs again changes nothing", again.xp === m.xp && again.history.length === 3);
+  check("merge order does not matter with runs", JSON.stringify(mergeProfiles(phone, laptop).history.map((r) => r.playedAt)) ===
+    JSON.stringify(m.history.map((r) => r.playedAt)));
+  check("the best score counts runs", m.bestScore === Math.max(runA.score, runB.score, quick.score));
+  check("a run keeps its depth and perks through a merge", m.history.find((r) => r.seed === "SYNC-A").depth === 12);
+  check("today's Daily Run is found from merged history", findDailyRun(m.history, new Date(2026, 9, 17)) &&
+    findDailyRun(m.history, new Date(2026, 9, 17)).seed === "RUN-20261017" && findDailyRun(m.history, new Date(2026, 9, 18)) === null);
+
+  const imp = parseImport(JSON.stringify(m));
+  check("an export with runs imports cleanly", imp.ok && imp.profile.history.filter((r) => r.mode === "run").length === 2);
+  check("boss rules do not count towards the eight core rules",
+    lifetimeStats({ ...m, ruleStats: { BOSS_DOUBLE_LONER: { seen: 3, correct: 2 }, MOST_PIPS: { seen: 1, correct: 1 } } }).rulesSeen === 1);
+  check("Drift Run shows its own name on result screens", modeConfig("run").label === "Drift Run");
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);

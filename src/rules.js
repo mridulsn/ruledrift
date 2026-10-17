@@ -84,10 +84,79 @@ export const RULES = [
   },
 ];
 
-export const RULE_BY_ID = Object.fromEntries(RULES.map((r) => [r.id, r]));
+// ---------------------------------------------------------------------------
+// Boss rules (Drift Run only).
+//
+// Each one needs TWO attributes at once, and each lists the single-attribute
+// "shortcuts" a player might reach for. The generator refuses any boss board
+// where a shortcut happens to point at the winner, so a boss can never be beaten
+// by accident with a one-attribute idea - you have to see both halves.
+//
+// They are kept out of RULES on purpose: the normal game, the codex count and
+// the "all eight rules" achievement are about the eight core rules only.
+// ---------------------------------------------------------------------------
+export const BOSS_RULES = [
+  {
+    id: "BOSS_DOUBLE_LONER",
+    tier: 9,
+    boss: true,
+    label: "Double loner",
+    families: ["colour", "shape"],
+    shortcuts: ["UNIQUE_COLOR", "UNIQUE_SHAPE"],
+    reveal:
+      "Look at colour and shape together. Several tiles may have a colour nobody else has, and several may have a shape nobody else has. Exactly one tile is alone on BOTH counts - its colour appears once and its shape appears once. That double loner wins.",
+  },
+  {
+    id: "BOSS_RICH_TWIN",
+    tier: 9,
+    boss: true,
+    label: "Richer twin",
+    families: ["colour", "dots"],
+    shortcuts: ["MOST_PIPS", "UNIQUE_COLOR"],
+    reveal:
+      "Find the one colour that appears exactly twice on the board - those two tiles are twins. Now count the dots on just those two. The twin holding more dots wins, even when some other tile on the board has more dots than both of them.",
+  },
+  {
+    id: "BOSS_HUMBLE_LONER",
+    tier: 9,
+    boss: true,
+    label: "Humble loner",
+    families: ["shape", "dots"],
+    shortcuts: ["FEWEST_PIPS", "UNIQUE_SHAPE"],
+    reveal:
+      "First pick out every tile whose shape appears only once on the board - there are always at least two of them. Then, among only those lonely shapes, the one with the fewest dots wins. A tile with fewer dots elsewhere does not count, because its shape has a partner.",
+  },
+];
+
+export const ALL_RULES = [...RULES, ...BOSS_RULES];
+
+export const RULE_BY_ID = Object.fromEntries(ALL_RULES.map((r) => [r.id, r]));
 
 export function rulesUpToTier(tier) {
   return RULES.filter((r) => r.tier <= tier);
+}
+
+export function isBossRule(id) {
+  return Boolean(RULE_BY_ID[id] && RULE_BY_ID[id].boss);
+}
+
+// What a Drift Run "peek" reveals: which attribute(s) the rule looks at, never
+// the rule itself.
+const FAMILY = {
+  MOST_PIPS: ["dots"],
+  FEWEST_PIPS: ["dots"],
+  ODD_PARITY: ["dots"],
+  UNIQUE_COLOR: ["colour"],
+  UNIQUE_SHAPE: ["shape"],
+  MATCH_LAST_COLOR: ["colour", "memory"],
+  MATCH_LAST_SHAPE: ["shape", "memory"],
+  SHARES_NOTHING: ["colour", "shape", "memory"],
+};
+
+export function ruleFamilies(id) {
+  if (FAMILY[id]) return FAMILY[id];
+  const r = RULE_BY_ID[id];
+  return r && r.families ? r.families : [];
 }
 
 export function ruleNeedsPrev(id) {
@@ -147,9 +216,49 @@ export function evaluateRule(ruleId, tiles, prev) {
         .filter((i) => i >= 0);
       return hits.length === 1 ? hits[0] : -1;
     }
+    case "BOSS_DOUBLE_LONER": {
+      const cs = singlesBy(tiles, (t) => t.color);
+      const ss = singlesBy(tiles, (t) => t.shape);
+      const both = cs.filter((i) => ss.includes(i));
+      return both.length === 1 ? both[0] : -1;
+    }
+    case "BOSS_RICH_TWIN": {
+      const counts = new Map();
+      tiles.forEach((t) => counts.set(t.color, (counts.get(t.color) || 0) + 1));
+      const pairs = [...counts.entries()].filter(([, n]) => n === 2).map(([c]) => c);
+      if (pairs.length !== 1) return -1;
+      const twins = tiles.map((t, i) => i).filter((i) => tiles[i].color === pairs[0]);
+      const [a, b] = twins;
+      if (tiles[a].count === tiles[b].count) return -1;
+      return tiles[a].count > tiles[b].count ? a : b;
+    }
+    case "BOSS_HUMBLE_LONER": {
+      const ss = singlesBy(tiles, (t) => t.shape);
+      if (ss.length < 2) return -1;
+      const min = Math.min(...ss.map((i) => tiles[i].count));
+      const lows = ss.filter((i) => tiles[i].count === min);
+      return lows.length === 1 ? lows[0] : -1;
+    }
     default:
       return -1;
   }
+}
+
+function singlesBy(tiles, keyFn) {
+  const counts = new Map();
+  tiles.forEach((t) => counts.set(keyFn(t), (counts.get(keyFn(t)) || 0) + 1));
+  return tiles.map((t, i) => i).filter((i) => counts.get(keyFn(tiles[i])) === 1);
+}
+
+/**
+ * True when a boss board can be won by a single-attribute idea - i.e. one of
+ * the boss rule's shortcuts happens to point at the same tile. Such boards are
+ * never handed out.
+ */
+export function shortcutHits(ruleId, tiles, prev, target) {
+  const r = RULE_BY_ID[ruleId];
+  if (!r || !r.shortcuts) return false;
+  return r.shortcuts.some((s) => evaluateRule(s, tiles, prev) === target);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +290,7 @@ function randomBoard(rng) {
  * @returns {{tiles: array, target: number}}
  */
 export function generateTrial(rng, ruleId, prev, avoidRule = null) {
+  if (isBossRule(ruleId) || isBossRule(avoidRule)) return generateBossAware(rng, ruleId, prev, avoidRule);
   for (let attempt = 0; attempt < 400; attempt++) {
     const tiles = randomBoard(rng);
     const target = evaluateRule(ruleId, tiles, prev);
@@ -201,7 +311,42 @@ export function generateTrial(rng, ruleId, prev, avoidRule = null) {
   return constructTrial(rng, ruleId, prev);
 }
 
-function constructTrial(rng, ruleId, prev) {
+/**
+ * The same search, for any trial that involves a boss rule (as the rule in
+ * force or as the rule being switched away from). Kept separate so the eight
+ * core rules draw exactly the same random numbers as before - old seeds, old
+ * duels and old dailies still produce byte-identical boards.
+ *
+ * Unlike the core path, the fallback here is checked too: it is retried until
+ * the board is solvable, any boss shortcut misses, and a switch stays visible.
+ */
+function generateBossAware(rng, ruleId, prev, avoidRule) {
+  const ok = (tiles, target, strict) => {
+    if (target < 0) return false;
+    if (shortcutHits(ruleId, tiles, prev, target)) return false;
+    if (avoidRule && avoidRule !== ruleId) {
+      const old = evaluateRule(avoidRule, tiles, prev);
+      if (old === target) return false;
+      if (strict && old < 0) return false;
+    }
+    return true;
+  };
+  for (let attempt = 0; attempt < 600; attempt++) {
+    const tiles = randomBoard(rng);
+    const target = evaluateRule(ruleId, tiles, prev);
+    if (ok(tiles, target, attempt < 300)) return { tiles, target };
+  }
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const built = constructTrial(rng, ruleId, prev);
+    const target = evaluateRule(ruleId, built.tiles, prev);
+    if (target >= 0 && ok(built.tiles, target, false)) return { tiles: built.tiles, target };
+  }
+  // Unreachable in practice (the self-test drives every rule pair through
+  // here); still return a solvable board rather than an unsolvable one.
+  return constructTrial(rng, ruleId, prev);
+}
+
+export function constructTrial(rng, ruleId, prev) {
   const tiles = randomBoard(rng);
   const t = rng.int(TILES_PER_TRIAL);
 
@@ -254,6 +399,38 @@ function constructTrial(rng, ruleId, prev) {
       });
       tiles[t].color = rng.pick(COLORS.filter((c) => c !== pc));
       tiles[t].shape = rng.pick(SHAPES.filter((s) => s !== ps));
+      break;
+    }
+    case "BOSS_DOUBLE_LONER":
+    case "BOSS_RICH_TWIN":
+    case "BOSS_HUMBLE_LONER": {
+      // Template: slot 0 is the winner, slots 1-4 the rest; then scattered.
+      const c = rng.shuffle([...COLORS]);
+      const s = rng.shuffle([...SHAPES]);
+      const k = (lo, hi) => rng.range(lo, hi);
+      let spec;
+      if (ruleId === "BOSS_DOUBLE_LONER") {
+        // colour singles: 0, 3, 4 - shape singles: 0, 2 - both: only 0.
+        spec = [[c[0], s[0]], [c[1], s[1]], [c[1], s[2]], [c[2], s[1]], [c[3], s[1]]]
+          .map(([color, shape]) => ({ color, shape, count: k(1, MAX_PIPS) }));
+      } else if (ruleId === "BOSS_RICH_TWIN") {
+        // twins 0 and 1 (colour c0); slot 2 holds the overall most dots.
+        const w = k(2, 4);
+        spec = [
+          { color: c[0], count: w }, { color: c[0], count: k(1, w - 1) },
+          { color: c[1], count: MAX_PIPS }, { color: c[2], count: k(1, 4) }, { color: c[3], count: k(1, 4) },
+        ].map((x) => ({ ...x, shape: rng.pick(SHAPES) }));
+      } else {
+        // lonely shapes 0 and 1; slot 2 holds the overall fewest dots.
+        const w = k(2, 4);
+        spec = [
+          { shape: s[0], count: w }, { shape: s[1], count: k(w + 1, MAX_PIPS) },
+          { shape: s[2], count: 1 }, { shape: s[2], count: k(2, MAX_PIPS) }, { shape: s[2], count: k(2, MAX_PIPS) },
+        ].map((x) => ({ ...x, color: rng.pick(COLORS) }));
+      }
+      const others = rng.shuffle([0, 1, 2, 3, 4].filter((i) => i !== t));
+      tiles[t] = spec[0];
+      others.forEach((pos, j) => (tiles[pos] = spec[j + 1]));
       break;
     }
   }

@@ -50,6 +50,12 @@ export const MODES = {
     id: "duel", label: "Duel", blurb: "The exact board your friend played.",
     lives: 3, timed: true, runMin: 4, runMax: 7,
   },
+  // Drift Run builds its own Game per room (see driftrun.js) and overrides the
+  // pool, clock and hearts; this entry is what the result screens read.
+  run: {
+    id: "run", label: "Drift Run", blurb: "Three acts, a boss at the end of each.",
+    lives: 3, timed: false, runMin: 3, runMax: 5,
+  },
 };
 
 export function modeConfig(id) {
@@ -86,16 +92,32 @@ export class Game {
    * @param {string} opts.mode      key of MODES
    * @param {number} opts.maxTier   highest rule tier unlocked (1..3)
    */
-  constructor({ seed, mode = "quick", maxTier = 1 }) {
+  constructor({
+    seed, mode = "quick", maxTier = 1,
+    // Overrides used by Drift Run rooms. Left out, the game behaves (and draws
+    // random numbers) exactly as it always has, so old seeds replay the same.
+    pool = null, runMin, runMax, lives, maxLives, timeLimitMs,
+    shields = 0, goal = 0, freeFirst = false, firstRule = null, alternate = null,
+  }) {
     this.seed = seed;
     this.mode = mode;
     this.cfg = modeConfig(mode);
-    this.maxLives = this.cfg.lives;
+    if (runMin !== undefined || runMax !== undefined) {
+      this.cfg = { ...this.cfg, runMin: runMin ?? this.cfg.runMin, runMax: runMax ?? this.cfg.runMax };
+    }
+    this.maxLives = maxLives ?? this.cfg.lives;
     this.maxTier = Math.max(1, Math.min(3, maxTier));
     this.rng = makeRng(hashSeed(seed));
-    this.pool = rulesUpToTier(this.maxTier).map((r) => r.id);
+    this.pool = pool ? [...pool] : rulesUpToTier(this.maxTier).map((r) => r.id);
+    this.fixedTimeMs = timeLimitMs;
+    this.shields = shields;
+    this.goal = goal;
+    this.freeFirst = freeFirst;
+    this.firstRule = firstRule;
+    this.alternate = alternate ? new Set(alternate) : null;
+    this.cleared = false;
 
-    this.lives = this.maxLives;
+    this.lives = lives ?? this.maxLives;
     this.score = 0;
     this.streak = 0;
     this.maxStreak = 0;
@@ -120,6 +142,7 @@ export class Game {
   }
 
   get timeLimitMs() {
+    if (this.fixedTimeMs !== undefined) return this.fixedTimeMs;
     return timeLimitForLevel(this.level, this.mode);
   }
 
@@ -130,6 +153,7 @@ export class Game {
 
   /** True on the board where the clock first appears, so the UI can announce it. */
   get clockJustStarted() {
+    if (this.fixedTimeMs !== undefined) return false;
     return this.timed && this.level === timerStartLevel(this.mode) &&
       this.correctCount % TRIALS_PER_LEVEL === 0;
   }
@@ -140,10 +164,17 @@ export class Game {
   }
 
   _pickRule(first = false) {
-    const eligible = this._eligibleRules().filter((id) => id !== this.currentRule);
+    let eligible = this._eligibleRules().filter((id) => id !== this.currentRule);
+    // A boss room swings between its boss rule(s) and the ordinary ones, so
+    // every change in there is a real change of kind.
+    if (this.alternate && !first) {
+      const inBoss = this.alternate.has(this.currentRule);
+      const side = eligible.filter((id) => this.alternate.has(id) !== inBoss);
+      if (side.length) eligible = side;
+    }
     const choices = eligible.length ? eligible : this._eligibleRules();
     this.previousRule = first ? null : this.currentRule;
-    this.currentRule = this.rng.pick(choices);
+    this.currentRule = first && this.firstRule ? this.firstRule : this.rng.pick(choices);
     this.correctSinceSwitch = 0;
     this.trialsSinceSwitch = 0;
     this.runTarget = this.rng.range(this.cfg.runMin, this.cfg.runMax);
@@ -195,7 +226,14 @@ export class Game {
     // still counts in your adaptation score, but it does not cost a life.
     // Without this, every rule change costs a life, three lives cap a run at
     // roughly level 3, and everything built for later levels is dead content.
-    const freeLook = !correct && t.isSwitchTrial && !timedOut;
+    // A Drift Run room also opens on a rule you have never seen, so its first
+    // board is a free look for the same reason.
+    const freeLook = !correct && !timedOut &&
+      (t.isSwitchTrial || (this.freeFirst && this.trials.length === 0));
+
+    // A shield (Drift Run perk) forgives one stuck-on-the-old-rule mistake.
+    const shielded = !correct && !freeLook && perseverative && this.shields > 0;
+    if (shielded) this.shields--;
 
     let gained = 0;
     if (correct) {
@@ -216,11 +254,12 @@ export class Game {
       this.prevTarget = { ...t.tiles[t.target] };
     } else {
       this.streak = 0;
-      if (!freeLook) this.lives--;
+      if (!freeLook && !shielded) this.lives--;
     }
 
     this.trials.push({
       freeLook,
+      shielded,
       n: this.trials.length + 1,
       rule: t.rule,
       previousRule: this.previousRule,
@@ -239,6 +278,13 @@ export class Game {
     this.trialsSinceSwitch++;
 
     if (this.lives <= 0) {
+      this.over = true;
+      this.trial = null;
+      return this.trials[this.trials.length - 1];
+    }
+
+    if (this.goal && this.correctCount >= this.goal) {
+      this.cleared = true;
       this.over = true;
       this.trial = null;
       return this.trials[this.trials.length - 1];
