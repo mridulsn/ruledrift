@@ -1,7 +1,7 @@
 {
   "name": "ruledrift",
   "version": "1.0.0",
-  "description": "A brain game where the rule is never told to you, and silently changes once you learn it.",
+  "description": "Split Clues: a logic grid puzzle with exactly one answer that pure logic reaches.",
   "type": "module",
   "private": true,
   "license": "MIT",
@@ -10,7 +10,7 @@
     "type": "git",
     "url": "https://github.com/mridulsn/ruledrift.git"
   },
-  "keywords": ["game", "pwa", "offline", "cognitive", "wisconsin-card-sorting"],
+  "keywords": ["game", "pwa", "offline", "logic-puzzle", "logic-grid"],
   "scripts": {
     "test": "node tools/selftest.mjs",
     "start": "python -m http.server 8796 --bind 127.0.0.1",

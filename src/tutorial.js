@@ -1,119 +1,50 @@
-// The tutorial.
+// The tutorial: one tiny 3x3 puzzle, played a cell at a time.
 //
-// It is scripted rather than generated, because the one thing a new player must
-// experience is the rug-pull - learning a rule, trusting it, and having it taken
-// away - and that cannot be left to chance on trial four.
-//
-// Design rules taken from FTUE research and applied literally:
-//   - teach by doing, never by a wall of text ("put a gap in front of them,
-//     not a manual")
-//   - a win inside the first thirty seconds
-//   - one idea at a time
-//   - nothing can kill you in here; a wrong tap just asks you to look again
-//   - skippable at any point
+// Scripted rather than generated, so every new player meets the three ideas in
+// the same order: an X means "not this one", a check means "this one", and the
+// clues plus the grid are always enough - nobody ever has to guess.
 
-const T = (shape, color, count) => ({ shape, color, count });
+export const TUTORIAL_PUZZLE = {
+  seed: "TUTORIAL",
+  preset: "easy",
+  n: 3,
+  k: 1,
+  people: ["Asha", "Ravi", "Mira"],
+  cats: [{ id: "shape", label: "Rune", values: ["circle", "square", "triangle"] }],
+  // solution[category][person] = value: Asha triangle, Ravi square, Mira circle.
+  solution: [[2, 1, 0]],
+  clues: [
+    { t: "same", a: { c: -1, v: 1 }, b: { c: 0, v: 1 } },
+    { t: "diff", a: { c: -1, v: 2 }, b: { c: 0, v: 2 } },
+  ],
+};
 
+/** Each step waits for one mark on one cell. */
 export const STEPS = [
   {
-    // Step 1: no instructions beyond "pick one". The board is engineered so the
-    // answer is obvious, which means the player's first act is a success.
-    prompt: "One of these five is the winner. Which one looks different to you? Tap it.",
-    tiles: [
-      T("circle", "cyan", 1), T("circle", "cyan", 1), T("circle", "cyan", 5),
-      T("circle", "cyan", 1), T("circle", "cyan", 1),
-    ],
-    target: 2,
-    success: "Yes! That one was the winner.",
-    teach:
-      "Notice that nobody told you why. This game keeps a secret: a hidden reason that decides which tile wins. You have to work it out by guessing and watching which stone flares gold.",
-    fail: "Look again. Four of them are the same. One is not.",
+    clue: 0, key: "g0r1c1", value: 2,
+    prompt: "Clue 1 says Ravi's rune is a square. Tap Ravi's square twice: one tap is an X, two is a check.",
+    halfway: "That is an X - it means \"not this one\". Tap the same cell again for a check.",
+    done: "A check also crosses out the rest of its row and column: Ravi holds nothing else, and nobody else holds the square.",
   },
   {
-    prompt: "Five new tiles. The secret has not changed. Tap the winner.",
-    tiles: [
-      T("square", "amber", 2), T("circle", "violet", 1), T("hex", "lime", 4),
-      T("diamond", "cyan", 2), T("triangle", "magenta", 1),
-    ],
-    target: 2,
-    success: "Correct again.",
-    teach:
-      "This time the shapes and colours were all different - but that did not matter. The secret is: THE TILE WITH THE MOST DOTS WINS.",
-    fail: "Count the dots on each tile. Which one has the most?",
-    failHint: "Ignore the colours and the shapes. Just count dots: 2, 1, 4, 2, 1.",
+    clue: 1, key: "g0r2c2", value: 1,
+    prompt: "Clue 2 says Mira's rune is not a triangle. Tap Mira's triangle once to cross it out.",
+    done: "Crossed out. Now look at Mira's row.",
   },
   {
-    prompt: "Once more. Tap the tile with the most dots.",
-    tiles: [
-      T("hex", "lime", 3), T("circle", "amber", 1), T("square", "magenta", 2),
-      T("triangle", "cyan", 5), T("diamond", "violet", 1),
-    ],
-    target: 3,
-    success: "Three right in a row.",
-    teach: "Now you know the secret and you can trust it. Remember it for the next one.",
-    fail: "Count again: 3, 1, 2, 5, 1. Which is the biggest?",
+    clue: null, key: "g0r2c0", value: 2,
+    prompt: "Mira has only one rune left. Check it: tap it twice.",
+    done: "No guess needed - the grid told you.",
   },
   {
-    // The rug-pull. Most-dots is deliberately a different tile from the correct
-    // one, so the expected wrong tap is exactly the mistake the game measures.
-    prompt: "Keep going. Tap the winner.",
-    tiles: [
-      T("circle", "cyan", 5), T("square", "cyan", 2), T("circle", "amber", 3),
-      T("square", "amber", 2), T("circle", "lime", 1),
-    ],
-    target: 4,
-    switched: true,
-    success: "Yes - the green one. It was the only tile of that colour.",
-    teach:
-      "THE SECRET CHANGED, and nothing warned you. It stopped being 'most dots' and became 'the only one of its colour'. This is the whole game: when your answer suddenly stops working, the secret has changed - so stop using it and look for the new one.",
-    fail: "Not any more. The 'most dots' secret has stopped working. Forget the dots - look at the COLOURS instead.",
-    failHint: "Count the colours: two blue, two orange, and one green sitting all on its own. Tap the lonely one.",
-  },
-  {
-    prompt: "New secret, same idea. Tap the winner.",
-    tiles: [
-      T("hex", "violet", 4), T("square", "cyan", 1), T("hex", "violet", 2),
-      T("square", "amber", 4), T("hex", "amber", 3),
-    ],
-    target: 1,
-    success: "That is it. You know how to play.",
-    teach:
-      "That is everything. In a real game the secret keeps changing every few turns and three mistakes end the round - but the board straight after a change is always free, and there is no clock at all until level 10. Take as long as you like.",
-    fail: "Which colour appears only ONCE? Two purple, two orange... and one more.",
+    clue: null, key: "g0r0c2", value: 2,
+    prompt: "Last one. What is left for Asha? Check it.",
+    done: "Solved. That is the whole game: clues and a grid, never a guess. Bigger puzzles add colours and dots.",
   },
 ];
 
-/** Rules the tutorial never mentions by name - it shows them instead. */
-export const TUTORIAL_RULES_SHOWN = ["MOST_PIPS", "UNIQUE_COLOR"];
-
-/**
- * The two worked examples printed in the guide. They live here rather than in
- * the UI so the test suite can prove the captions tell the truth - a guide that
- * teaches the wrong answer is worse than no guide.
- */
-export const GUIDE_EXAMPLES = {
-  mostDots: {
-    rule: "MOST_PIPS",
-    target: 2,
-    tiles: [
-      T("square", "amber", 2), T("circle", "violet", 1), T("hex", "lime", 4),
-      T("diamond", "cyan", 2), T("triangle", "magenta", 1),
-    ],
-  },
-  uniqueColour: {
-    rule: "UNIQUE_COLOR",
-    target: 4,
-    // Deliberately also the board where "most dots" points somewhere else, so
-    // the guide can show the moment an old idea stops working.
-    oldRule: "MOST_PIPS",
-    tiles: [
-      T("circle", "cyan", 5), T("square", "cyan", 2), T("circle", "amber", 3),
-      T("square", "amber", 2), T("circle", "lime", 1),
-    ],
-  },
-};
-
-export const TUTORIAL_KEY = "ruledrift.tutorialDone";
+export const TUTORIAL_KEY = "ruledrift.cluesTutorialDone";
 
 export function tutorialDone() {
   try {

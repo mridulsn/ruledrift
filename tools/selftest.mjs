@@ -1,19 +1,20 @@
-// Engine self-test. Run: node tools/selftest.mjs
-// Checks the invariants that make the game fair and the duel honest.
+// Self-test. Run: node tools/selftest.mjs
+// Checks the invariants that make the game fair: every puzzle has exactly one
+// answer that logic reaches, every hint is provable, runs and rooms are
+// deterministic, and no sync can lose or invent progress.
 
-import { Game } from "../src/engine.js";
 import {
-  generateTrial, evaluateRule, RULES, rulesUpToTier, ruleNeedsPrev,
-  BOSS_RULES, isBossRule, shortcutHits, constructTrial, ruleFamilies,
-} from "../src/rules.js";
+  generatePuzzle, solveLogic, clueHolds, clueText, clueParts, clueKind, findHint, PuzzlePlay, PRESETS, PRACTICE,
+  cellKey, parseKey, isTrue, dailyPreset, dailyClueSeed, findDailyClues, puzzleResult, scorePuzzle, cluesFor, clock,
+} from "../src/clues.js";
 import {
-  DriftRun, buildRunMap, dailyRunSeed, findDailyRun, isDailyRunSeed, STEPS_PER_ACT, PERKS, MAX_HEARTS,
+  DriftRun, buildRunMap, dailyRunSeed, findDailyRun, isDailyRunSeed, STEPS_PER_ACT, PERKS, MAX_HEARTS, ACTS, ELITE_MS, presetFor,
 } from "../src/driftrun.js";
-import { makeRng, hashSeed, randomSeedCode, dailySeedCode } from "../src/rng.js";
-import { STEPS as TUT, GUIDE_EXAMPLES } from "../src/tutorial.js";
-import { MODES, modeConfig, timeLimitForLevel } from "../src/engine.js";
-import { rankFor, achievementRows, lifetimeStats, xpFor } from "../src/achievements.js";
+import { dailySeedCode } from "../src/rng.js";
+import { TUTORIAL_PUZZLE, STEPS as TUT } from "../src/tutorial.js";
+import { rankFor, achievementRows, lifetimeStats, xpFor, unlockedSet } from "../src/achievements.js";
 import { mergeProfiles, streaksFromDays, parseImport } from "../src/storage.js";
+import * as storage from "../src/storage.js";
 import {
   cloudConfigured,
   PROVIDERS,
@@ -23,7 +24,10 @@ import {
   providerStartUrl,
   tokenClaims,
   hasSignInHash,
+  toFs, fromFs, fieldPath, patchBody, readRoomResponse,
 } from "../src/cloud.js";
+import * as roomsLib from "../src/rooms.js";
+import { buildShareText } from "../src/share.js";
 import { FIREBASE_API_KEY, FIREBASE_PROJECT_ID, GOOGLE_CLIENT_ID, API_ORIGIN } from "../src/config.js";
 
 let failures = 0;
@@ -36,310 +40,534 @@ function check(name, cond, detail = "") {
   }
 }
 
-// Deterministic autoplayer: knows the rule, so it plays perfectly except when
-// the rule has just changed - which is exactly how a good human plays.
-function autoplay(seed, tier, { perfect = true, rng = null } = {}) {
-  const g = new Game({ seed, mode: "quick", maxTier: tier });
-  let guard = 0;
-  while (!g.over && guard++ < 5000) {
-    const t = g.trial;
-    let pick = t.target;
-    if (!perfect && rng && rng.next() < 0.25) pick = rng.int(t.tiles.length);
-    g.answer(pick, 800 + (rng ? rng.int(600) : 0));
-  }
-  return g;
-}
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
 
-console.log("\n1. Rule generation always yields exactly one answer");
-{
-  const rng = makeRng(hashSeed("gen-test"));
-  let bad = 0;
-  let checked = 0;
-  for (const rule of RULES) {
-    for (let i = 0; i < 4000; i++) {
-      const prev = { shape: rng.pick(["circle", "square", "triangle", "diamond", "hex"]),
-                     color: rng.pick(["cyan", "amber", "magenta", "lime", "violet"]),
-                     count: rng.range(1, 5) };
-      const { tiles, target } = generateTrial(rng, rule.id, prev, null);
-      checked++;
-      if (target < 0 || target >= tiles.length) { bad++; continue; }
-      if (evaluateRule(rule.id, tiles, prev) !== target) bad++;
+function perms(n) {
+  const out = [];
+  const rec = (arr, used) => {
+    if (arr.length === n) { out.push(arr.slice()); return; }
+    for (let i = 0; i < n; i++) if (!used[i]) { used[i] = true; arr.push(i); rec(arr, used); arr.pop(); used[i] = false; }
+  };
+  rec([], []);
+  return out;
+}
+const PERMS = { 3: perms(3), 4: perms(4), 5: perms(5) };
+
+/** Every answer the clues allow, by brute force (stops at `limit`). */
+function bruteSolutions(pz, limit = 3) {
+  const { n, k, clues } = pz;
+  const cats = (cl) => [cl.a, cl.b, cl.b2].filter(Boolean).map((it) => it.c).filter((c) => c >= 0);
+  const by = Array.from({ length: k }, () => []);
+  for (const cl of clues) by[Math.max(-1, ...cats(cl))].push(cl);
+  const found = [];
+  const sol = [];
+  const rec = (c) => {
+    if (found.length >= limit) return;
+    if (c === k) { found.push(sol.map((r) => r.slice())); return; }
+    for (const p of PERMS[n]) {
+      sol[c] = p;
+      // Only clues whose categories are all chosen can be checked yet.
+      const partial = sol.slice(0, c + 1);
+      if (by[c].every((cl) => clueHolds(partial, cl))) rec(c + 1);
     }
+    sol.length = c;
+  };
+  rec(0);
+  return found;
+}
+
+/** Tap a cell until it shows `v`. */
+function setMark(play, key, v) {
+  for (let i = 0; i < 3 && (play.grid[key] || 0) !== v; i++) play.tap(key);
+}
+
+/** Solve a puzzle perfectly: a check on every true cell. */
+function solveByHand(play) {
+  const pz = play.puzzle;
+  for (let c = 0; c < pz.k; c++) for (let p = 0; p < pz.n; p++) {
+    const key = cellKey(c, p, pz.solution[c][p]);
+    if (play.solved) return;
+    setMark(play, key, 2);
   }
-  check(`every generated board is solvable (${checked} boards)`, bad === 0, `bad=${bad}`);
 }
 
-console.log("\n2. A rule change is always detectable");
+console.log("\n1. Every puzzle has exactly one answer, and logic alone reaches it (2,000 per size)");
 {
-  const rng = makeRng(hashSeed("switch-test"));
-  let invisible = 0;
-  let tested = 0;
-  for (let i = 0; i < 6000; i++) {
-    const pool = rulesUpToTier(3).map((r) => r.id);
-    const oldRule = rng.pick(pool);
-    const newRule = rng.pick(pool.filter((r) => r !== oldRule));
-    const prev = { shape: "circle", color: "cyan", count: 3 };
-    const { tiles, target } = generateTrial(rng, newRule, prev, oldRule);
-    const oldAnswer = evaluateRule(oldRule, tiles, prev);
-    tested++;
-    // If the old rule points at the same tile, the player cannot possibly tell
-    // the rule changed - that would be an unfair death.
-    if (oldAnswer === target) invisible++;
-  }
-  check(`switch trials never keep the same answer (${tested} switches)`, invisible === 0, `invisible=${invisible}`);
-}
-
-console.log("\n3. Determinism - same seed, identical game");
-{
-  const seed = "K7F2QM";
-  const rngA = makeRng(hashSeed("play-a"));
-  const rngB = makeRng(hashSeed("play-a"));
-  const a = autoplay(seed, 3, { perfect: false, rng: rngA });
-  const b = autoplay(seed, 3, { perfect: false, rng: rngB });
-  check("same seed gives the same score", a.score === b.score, `${a.score} vs ${b.score}`);
-  check("same seed gives the same trial count", a.trials.length === b.trials.length);
-  check(
-    "same seed gives the same rule sequence",
-    JSON.stringify(a.trials.map((t) => t.rule)) === JSON.stringify(b.trials.map((t) => t.rule))
-  );
-
-  const c = autoplay("DIFFERENT", 3, { perfect: false, rng: makeRng(hashSeed("play-a")) });
-  check("a different seed gives a different game", JSON.stringify(a.trials.map((t) => t.rule)) !== JSON.stringify(c.trials.map((t) => t.rule)));
-}
-
-console.log("\n4. Termination and lives");
-{
-  let worst = 0;
-  for (let i = 0; i < 300; i++) {
-    const g = new Game({ seed: "T" + i, mode: "quick", maxTier: 3 });
-    let n = 0;
-    while (!g.over && n++ < 4000) g.answer(0, 900); // always tap tile 0
-    if (!g.over) { worst = -1; break; }
-    worst = Math.max(worst, g.trials.length);
-    if (g.lives > 0) { worst = -2; break; }
-  }
-  check("a bad player always dies, and quickly", worst > 0 && worst < 400, `worst=${worst}`);
-}
-
-console.log("\n5. Echo rules never appear before there is something to echo");
-{
-  let bad = 0;
-  for (let i = 0; i < 400; i++) {
-    const g = new Game({ seed: "E" + i, mode: "quick", maxTier: 3 });
-    if (ruleNeedsPrev(g.currentRule)) bad++;
-    let n = 0;
-    while (!g.over && n++ < 500) {
-      if (ruleNeedsPrev(g.trial.rule) && !g.prevTarget) bad++;
-      g.answer(g.trial.target, 800);
-      if (n > 120) break;
-    }
-  }
-  check("no echo rule without a previous target", bad === 0, `bad=${bad}`);
-}
-
-console.log("\n6. Perseverative errors are actually detected");
-{
-  // Play the OLD rule on purpose after every switch and confirm it is flagged.
-  let flagged = 0;
-  let opportunities = 0;
-  for (let i = 0; i < 300; i++) {
-    const g = new Game({ seed: "P" + i, mode: "quick", maxTier: 3 });
-    let n = 0;
-    while (!g.over && n++ < 400) {
-      const t = g.trial;
-      if (t.isSwitchTrial && g.previousRule && t.answers[g.previousRule] >= 0) {
-        opportunities++;
-        const rec = g.answer(t.answers[g.previousRule], 800);
-        if (rec.perseverative) flagged++;
-      } else {
-        g.answer(t.target, 800);
+  const SEEDS = 2000;
+  for (const id of Object.keys(PRESETS)) {
+    const P = PRESETS[id];
+    let notLogic = 0, untrue = 0, notMinimal = 0, badShape = 0, nondet = 0, minC = 99, maxC = 0;
+    const kinds = new Set();
+    for (let i = 0; i < SEEDS; i++) {
+      const pz = generatePuzzle("T" + i, id);
+      const r = solveLogic(pz.n, pz.k, pz.clues);
+      if (!r.done || JSON.stringify(r.solution) !== JSON.stringify(pz.solution)) notLogic++;
+      if (!pz.clues.every((cl) => clueHolds(pz.solution, cl))) untrue++;
+      // Minimal for logic: take any one clue away and the deductions stall.
+      for (let j = 0; j < pz.clues.length; j++) {
+        if (solveLogic(pz.n, pz.k, pz.clues.filter((_, x) => x !== j)).done) { notMinimal++; break; }
       }
+      if (pz.n !== P.n || pz.k !== P.cats.length || pz.people.length !== P.n || new Set(pz.people).size !== P.n ||
+        pz.cats.some((c) => c.values.length !== P.n || new Set(c.values).size !== P.n)) badShape++;
+      if (i % 10 === 0 && JSON.stringify(generatePuzzle("T" + i, id)) !== JSON.stringify(pz)) nondet++;
+      minC = Math.min(minC, pz.clues.length);
+      maxC = Math.max(maxC, pz.clues.length);
+      for (const cl of pz.clues) kinds.add(clueKind(cl));
     }
+    check(`${id}: logic fills the grid and lands on the planted answer`, notLogic === 0, `bad=${notLogic}`);
+    check(`${id}: every clue is true`, untrue === 0, `bad=${untrue}`);
+    check(`${id}: no clue is spare (removing any one stalls the logic)`, notMinimal === 0, `bad=${notMinimal}`);
+    check(`${id}: right number of people, values and categories`, badShape === 0, `bad=${badShape}`);
+    check(`${id}: the same seed deals the same puzzle`, nondet === 0, `bad=${nondet}`);
+    check(`${id}: a sensible number of clues (${minC}-${maxC})`, minC >= 2 && maxC <= 20);
+    if (id !== "easy") check(`${id}: a mix of clue kinds (${[...kinds].join(", ")})`, kinds.size >= 4);
   }
-  check(
-    `sticking to the old rule is flagged (${flagged}/${opportunities})`,
-    opportunities > 50 && flagged === opportunities,
-    `flagged=${flagged} of ${opportunities}`
-  );
+  check("different seeds deal different puzzles",
+    new Set(Array.from({ length: 50 }, (_, i) => JSON.stringify(generatePuzzle("D" + i, "medium").solution))).size > 30);
+  check("a size id that does not exist falls back to Easy", generatePuzzle("X", "nope").preset === "easy");
 }
 
-console.log("\n7. Metrics are sane");
+console.log("\n2. Brute force agrees: exactly one answer");
 {
-  const g = autoplay("METRICS", 3, { perfect: false, rng: makeRng(hashSeed("m")) });
-  const r = g.result();
-  check("accuracy in 0..1", r.accuracy >= 0 && r.accuracy <= 1, String(r.accuracy));
-  check("brain score in 0..100", r.brainScore >= 0 && r.brainScore <= 100, String(r.brainScore));
-  check("every domain in 0..100 or null",
-    Object.values(r.domains).every((v) => v === null || (v >= 0 && v <= 100)),
-    JSON.stringify(r.domains));
-  check("log length matches trials", r.log.length === r.trials);
-  check("perseverative errors never exceed total errors",
-    r.perseverativeErrors <= r.trials - r.correct);
-
-  const perfect = autoplay("METRICS", 3, { perfect: true });
-  const pr = perfect.result();
-  check("a perfect player still eventually dies on the clock or a switch", pr.trials > 0);
-  check("perfect play scores higher than sloppy play", pr.score > r.score, `${pr.score} vs ${r.score}`);
+  const plan = { easy: 2000, easy4: 2000, medium: 2000, hard: 300, expert: 8 };
+  for (const [id, count] of Object.entries(plan)) {
+    let bad = 0;
+    for (let i = 0; i < count; i++) {
+      const pz = generatePuzzle("T" + i, id);
+      const all = bruteSolutions(pz, 2);
+      if (all.length !== 1 || JSON.stringify(all[0]) !== JSON.stringify(pz.solution)) bad++;
+    }
+    check(`${id}: brute force finds one answer, the planted one (${count} puzzles)`, bad === 0, `bad=${bad}`);
+  }
 }
 
-console.log("\n8. Daily seed is stable within a day, different across days");
+console.log("\n3. Hints are always provable, and say why");
 {
-  const d1 = dailySeedCode(new Date(2026, 8, 4));
-  const d1b = dailySeedCode(new Date(2026, 8, 4, 23, 59));
-  const d2 = dailySeedCode(new Date(2026, 8, 5));
-  check("same day, same seed", d1 === d1b, `${d1} vs ${d1b}`);
-  check("next day, different seed", d1 !== d2);
-  check("random seed codes are 6 chars", randomSeedCode().length === 6);
-}
-
-console.log("\n9. Tutorial boards are exactly what they claim");
-{
-  const rulesUsed = ["MOST_PIPS","MOST_PIPS","MOST_PIPS","UNIQUE_COLOR","UNIQUE_COLOR"];
-  let bad = 0;
-  TUT.forEach((step, i) => {
-    const got = evaluateRule(rulesUsed[i], step.tiles, null);
-    if (got !== step.target) { bad++; console.log(`     step ${i+1}: rule says ${got}, script says ${step.target}`); }
-    if (step.tiles.length !== 5) bad++;
-  });
-  check("every tutorial board's answer matches its intended rule", bad === 0, `bad=${bad}`);
-
-  // The rug-pull only teaches anything if the old rule points somewhere else.
-  const sw = TUT.find((s) => s.switched);
-  const oldRuleSays = evaluateRule("MOST_PIPS", sw.tiles, null);
-  check("the switch step punishes the OLD rule", oldRuleSays >= 0 && oldRuleSays !== sw.target,
-    `old rule -> ${oldRuleSays}, correct is ${sw.target}`);
-  check("every tutorial step has prompt, success, teach and fail text",
-    TUT.every((s) => s.prompt && s.success && s.teach && s.fail));
-}
-
-console.log("\n9b. The guide's worked examples tell the truth");
-{
-  for (const [name, ex] of Object.entries(GUIDE_EXAMPLES)) {
-    const got = evaluateRule(ex.rule, ex.tiles, null);
-    check(`guide example "${name}" really is won by ${ex.rule}`, got === ex.target,
-      `rule picks ${got}, guide labels ${ex.target}`);
-    check(`guide example "${name}" has 5 tiles`, ex.tiles.length === 5);
-  }
-  // The second example is only instructive if the old rule points elsewhere.
-  const b = GUIDE_EXAMPLES.uniqueColour;
-  const old = evaluateRule(b.oldRule, b.tiles, null);
-  check("the 'secret changed' example really does defeat the old rule",
-    old >= 0 && old !== b.target, `old rule -> ${old}, winner is ${b.target}`);
-
-  // Two different jobs: the label is a short name you can mutter mid-game, the
-  // reveal is the full teaching text. Neither may drift into the other's job.
-  const jargon = /perseverativ|latency|induction|heuristic|parity/i;
-  const badReveal = RULES.filter((r) => !r.reveal || r.reveal.length < 120 || jargon.test(r.reveal));
-  check("every rule's explanation is elaborate and jargon-free", badReveal.length === 0,
-    badReveal.map((r) => `${r.id}(${(r.reveal || "").length})`).join(","));
-
-  const badLabel = RULES.filter((r) => !r.label || r.label.length > 16 || r.label.split(" ").length > 3);
-  check("every rule label stays short and punchy", badLabel.length === 0,
-    badLabel.map((r) => r.label).join(" | "));
-}
-
-console.log("\n9c. The clock stays away while you are learning");
-{
-  // The whole point: a beginner must never be rushed.
-  const early = [1, 2, 3, 5, 8, 9].map((L) => timeLimitForLevel(L, "quick"));
-  check("no clock at all before level 10", early.every((t) => t === Infinity),
-    early.join(","));
-  check("the clock appears exactly at level 10",
-    timeLimitForLevel(9, "quick") === Infinity && isFinite(timeLimitForLevel(10, "quick")));
-  check("it starts generous (20s)", timeLimitForLevel(10, "quick") === 20000,
-    String(timeLimitForLevel(10, "quick")));
-
-  // It must tighten, monotonically, and never below the floor.
-  let prev = Infinity, monotone = true, floorOk = true;
-  for (let L = 10; L <= 60; L++) {
-    const t = timeLimitForLevel(L, "quick");
-    if (t > prev) monotone = false;
-    if (t < 1700) floorOk = false;
-    prev = t;
-  }
-  check("the clock only ever tightens", monotone);
-  check("it never drops below the 1.7s floor", floorOk);
-  check("it reaches the floor eventually", timeLimitForLevel(60, "quick") === 1700);
-  check("blitz is timed from board one", isFinite(timeLimitForLevel(1, "blitz")));
-  check("zen is never timed", [1, 10, 50].every((L) => timeLimitForLevel(L, "zen") === Infinity));
-
-  // A free look on the switch board is what makes level 10 reachable at all.
-  const g = new Game({ seed: "FREE", mode: "quick", maxTier: 3 });
-  let frees = 0, n = 0;
-  while (!g.over && n++ < 400) {
-    const t = g.trial;
-    const rec = t.isSwitchTrial ? g.answer((t.target + 1) % 5, 900) : g.answer(t.target, 900);
-    if (rec.freeLook) frees++;
-  }
-  check("getting the switch board wrong costs no life", frees >= 3 && g.lives === g.maxLives,
-    `frees=${frees}, lives=${g.lives}/${g.maxLives}`);
-
-  // ...but repeating a dead rule later still does.
-  const g2 = new Game({ seed: "FREE2", mode: "quick", maxTier: 3 });
-  let m = 0;
-  while (!g2.over && m++ < 400) {
-    const t = g2.trial;
-    g2.answer(t.isSwitchTrial ? t.target : (t.target + 1) % 5, 900);
-  }
-  check("being wrong on a normal board still costs a life", g2.over && g2.lives <= 0);
-
-  // And the milestone has to actually be attainable by a strong player.
-  const reached = (() => {
-    const rng = makeRng(hashSeed("reach"));
-    let hits = 0;
-    for (let i = 0; i < 200; i++) {
-      const gg = new Game({ seed: "R" + i, mode: "quick", maxTier: 3 });
-      let known = null, k = 0;
-      while (!gg.over && k++ < 3000) {
-        const t = gg.trial;
-        gg.answer(known === t.rule && rng.next() < 0.97 ? t.target : rng.int(5), 1200);
-        known = t.rule;
+  for (const id of Object.keys(PRESETS)) {
+    let fallback = 0, wrong = 0, unsolved = 0, noReason = 0, steps = 0;
+    for (let i = 0; i < 300; i++) {
+      const pz = generatePuzzle("H" + i, id);
+      const play = new PuzzlePlay(pz);
+      let guard = 0;
+      while (!play.solved && guard++ < 200) {
+        const hres = play.hint();
+        if (!hres) break;
+        steps++;
+        if (hres.fallback) fallback++;
+        if (hres.value === 2 && !isTrue(pz, hres.key)) wrong++;
+        if (hres.value === 1 && isTrue(pz, hres.key)) wrong++;
+        if (!hres.why || /undefined|NaN/.test(hres.why)) noReason++;
       }
-      if (gg.level >= 10) hits++;
+      if (!play.solved) unsolved++;
     }
-    return hits;
+    check(`${id}: hints alone solve every puzzle, never peeking at the answer`, fallback === 0 && unsolved === 0, `fallback=${fallback} unsolved=${unsolved}`);
+    check(`${id}: every hinted mark is right`, wrong === 0, `wrong=${wrong}`);
+    check(`${id}: every hint gives a reason`, noReason === 0 && steps > 0);
+  }
+  // Hints work from half-finished grids too, not just from empty.
+  const pz = generatePuzzle("MID", "hard");
+  const play = new PuzzlePlay(pz);
+  setMark(play, cellKey(0, 0, pz.solution[0][0]), 2);
+  const hres = play.hint();
+  check("a hint on a half-done grid is a new, correct mark", hres && !hres.fallback && (hres.value === 2) === isTrue(pz, hres.key));
+  const cited = (() => {
+    for (let i = 0; i < 50; i++) {
+      const p2 = new PuzzlePlay(generatePuzzle("C" + i, "medium"));
+      const h2 = p2.hint();
+      if (h2 && h2.clue !== null) return /^Clue \d+ proves it/.test(h2.why);
+    }
+    return false;
   })();
-  check(`level 10 is reachable by a strong player (${reached}/200 runs)`, reached >= 60,
-    `only ${reached}/200`);
+  check("a clue-based hint names its clue", cited);
+
+  // A wrong X is the one thing that can strand a player: the hint fixes it first.
+  const p3 = new PuzzlePlay(generatePuzzle("FIX", "medium"));
+  const truthKey = cellKey(1, 2, p3.puzzle.solution[1][2]);
+  p3.tap(truthKey);
+  const fix = p3.hint();
+  check("an X on the real answer is found and cleared by a hint", fix && fix.fix && fix.key === truthKey && !p3.grid[truthKey]);
+  const p4 = new PuzzlePlay(generatePuzzle("FIX2", "easy"));
+  const falseKey = cellKey(0, 0, (p4.puzzle.solution[0][0] + 1) % 3);
+  p4.grid[falseKey] = 2; // as if it came from elsewhere
+  const fix2 = p4.hint();
+  check("a wrong check is found and turned into an X", fix2 && fix2.fix && fix2.key === falseKey && p4.grid[falseKey] === 1);
 }
 
-console.log("\n10. Modes behave differently");
+console.log("\n4. Marks, mistakes and the end of a puzzle");
 {
-  check("zen has no clock", timeLimitForLevel(1, "zen") === Infinity);
-  check("blitz is timed earlier than quick", timeLimitForLevel(3, "blitz") < timeLimitForLevel(3, "quick"));
-  check("zen is more forgiving", modeConfig("zen").lives > modeConfig("quick").lives);
-  check("gauntlet switches every 3", modeConfig("gauntlet").runMin === 3 && modeConfig("gauntlet").runMax === 3);
+  const pz = generatePuzzle("PLAY", "medium");
+  const play = new PuzzlePlay(pz);
+  const t = cellKey(0, 1, pz.solution[0][1]);
+  const f = cellKey(0, 1, (pz.solution[0][1] + 1) % pz.n);
+  check("one tap is an X", play.tap(f).value === 1 && play.grid[f] === 1);
+  const wrong = play.tap(f);
+  check("a wrong check counts one mistake", wrong.wrong === true && play.mistakes === 1);
+  check("a wrong check settles as an X, never a check", play.grid[f] === 1);
+  play.tap(t);
+  const right = play.tap(t);
+  check("a right check stays", right.value === 2 && !right.wrong && play.grid[t] === 2);
+  const autoX = Object.keys(right.changed).filter((k) => k !== t);
+  check("a check crosses out the rest of its row and column", autoX.length >= 2 * (pz.n - 1) - 1 &&
+    autoX.every((k) => play.grid[k] === 1 && !isTrue(pz, k)));
+  check("a third tap clears a cell", (() => { const q = new PuzzlePlay(pz); q.tap(f); q.tap(f); q.tap(t); q.tap(t); return q.tap(t).value === 0 && !q.grid[t]; })());
+  check("not solved until every rune is placed", !play.solved);
+  solveByHand(play);
+  check("placing every rune solves it", play.solved && play.placed === play.total);
+  check("a solved grid ignores further taps", play.tap(f) === null);
+  const shielded = new PuzzlePlay(pz, { shields: 1 });
+  const s1 = shielded.place(f, 2);
+  check("a shield forgives one wrong check", s1.wrong && s1.shielded && shielded.mistakes === 0 && shielded.forgiven === 1);
+  check("only one", shielded.place(cellKey(0, 2, (pz.solution[0][2] + 1) % pz.n), 2).shielded === false && shielded.mistakes === 1);
 
-  const g = new Game({ seed: "GAUNT", mode: "gauntlet", maxTier: 3 });
-  let n = 0;
-  while (!g.over && n++ < 60) g.answer(g.trial.target, 700);
-  check("gauntlet produces far more rule changes", g.ruleChanges >= 12, `changes=${g.ruleChanges} in ${g.trials.length} trials`);
+  const res = puzzleResult(play, { mode: "sc-practice", ms: 95000, playedAt: 1234 });
+  check("a solved puzzle makes a full history record", res.game === "clues" && res.mode === "sc-practice" && res.solved &&
+    res.seed === "PLAY" && res.preset === "medium" && res.mistakes === 1 && res.ms === 95000 && res.playedAt === 1234);
+  check("score rewards pace and punishes slips", scorePuzzle("medium", 60000) > scorePuzzle("medium", 300000) &&
+    scorePuzzle("medium", 60000, 0) > scorePuzzle("medium", 60000, 2) && scorePuzzle("medium", 60000, 0, 0) > scorePuzzle("medium", 60000, 0, 1));
+  check("score never goes below a floor", scorePuzzle("easy", 9e9, 50, 50) > 0);
+  check("the clock reads like a clock", clock(0) === "0:00" && clock(65000) === "1:05" && clock(600000) === "10:00");
 
-  const zen = new Game({ seed: "ZEN", mode: "zen", maxTier: 2 });
-  check("zen reports itself untimed", zen.timed === false && zen.maxLives === 5);
+  check("cell keys round-trip", JSON.stringify(parseKey(cellKey(2, 4, 3))) === JSON.stringify({ c: 2, p: 4, v: 3 }) && parseKey("x") === null);
+  const remote = new PuzzlePlay(pz);
+  remote.applyRemote({ [t]: 2, junk: 5, g9r9c9x: 1, [f]: 7 });
+  check("marks from a friend are taken, junk is not", remote.grid[t] === 2 && Object.keys(remote.grid).length === 1);
 }
 
-console.log("\n11. Ranks and achievements");
+console.log("\n5. Clues read as sentences");
+{
+  let bad = 0, n = 0;
+  const kinds = new Set();
+  for (const id of Object.keys(PRESETS)) {
+    for (let i = 0; i < 200; i++) {
+      const pz = generatePuzzle("W" + i, id);
+      for (const cl of pz.clues) {
+        n++;
+        kinds.add(clueKind(cl));
+        const txt = clueText(pz, cl);
+        const parts = clueParts(pz, cl);
+        if (!/^[A-Z].*\.$/.test(txt) || /undefined|NaN|null|\s\s/.test(txt)) bad++;
+        if (!parts.length || parts.some((p) => !p.item && typeof p.text !== "string")) bad++;
+      }
+    }
+  }
+  check(`${n} clues all render as clean sentences`, bad === 0, `bad=${bad}`);
+  check("every clue kind is dealt somewhere", ["same", "diff", "either", "link", "unlink", "left", "next", "right"].every((k) => kinds.has(k)), [...kinds].join(","));
+  const pz = generatePuzzle("WORDS", "expert");
+  check("an expert clue mentions real names or features", pz.clues.every((cl) => {
+    const t = clueText(pz, cl);
+    return pz.people.some((p) => t.includes(p)) || /circle|square|triangle|diamond|hexagon|teal|amber|rose|green|violet|dot/.test(t);
+  }));
+}
+
+console.log("\n6. The Daily puzzle");
+{
+  const mon = new Date(2026, 9, 12), sun = new Date(2026, 9, 18);
+  check("Monday is Easy, Sunday is Expert", dailyPreset(mon) === "easy" && dailyPreset(sun) === "expert");
+  check("every weekday has a real size", Array.from({ length: 7 }, (_, i) => dailyPreset(new Date(2026, 9, 12 + i))).every((p) => PRESETS[p]));
+  const s1 = dailyClueSeed(new Date(2026, 9, 17, 0, 5)), s2 = dailyClueSeed(new Date(2026, 9, 17, 23, 55));
+  check("the Daily seed is the same all day", s1 === s2 && s1 === "CLUES-20261017", s1);
+  check("the Daily seed changes the next day", s1 !== dailyClueSeed(new Date(2026, 9, 18)));
+  check("the Daily puzzle is not the Daily Run or the old Daily", s1 !== dailyRunSeed(new Date(2026, 9, 17)) && s1 !== dailySeedCode(new Date(2026, 9, 17)));
+  check("everyone gets the same Daily", JSON.stringify(generatePuzzle(s1, dailyPreset(new Date(2026, 9, 17)))) ===
+    JSON.stringify(generatePuzzle(s1, dailyPreset(new Date(2026, 9, 17)))));
+  const hist = [{ game: "clues", mode: "sc-practice", seed: s1 }, { mode: "daily", seed: "DAILY-20261017" }, { game: "clues", mode: "sc-daily", seed: s1, ms: 5 }];
+  check("today's Daily is found from history, and only today's", findDailyClues(hist, new Date(2026, 9, 17)).ms === 5 &&
+    findDailyClues(hist, new Date(2026, 9, 18)) === null);
+}
+
+console.log("\n7. The tutorial puzzle teaches what it says");
+{
+  const pz = TUTORIAL_PUZZLE;
+  const r = solveLogic(pz.n, pz.k, pz.clues);
+  check("the tutorial's two clues solve it by logic", r.done && JSON.stringify(r.solution) === JSON.stringify(pz.solution));
+  check("both tutorial clues are needed", pz.clues.every((_, j) => !solveLogic(pz.n, pz.k, pz.clues.filter((__, x) => x !== j)).done));
+  check("the clues say what the steps claim", clueText(pz, pz.clues[0]) === "Ravi's rune is a square." &&
+    clueText(pz, pz.clues[1]) === "Mira's rune is not a triangle.");
+  const play = new PuzzlePlay(pz);
+  let ok = true;
+  for (const st of TUT) {
+    if (st.value === 2 && !isTrue(pz, st.key)) ok = false;
+    if (st.value === 1 && isTrue(pz, st.key)) ok = false;
+    if ((play.grid[st.key] || 0) !== 0) ok = false; // each step's cell is still blank when it is asked for
+    setMark(play, st.key, st.value);
+    if (play.grid[st.key] !== st.value) ok = false;
+  }
+  check("following the four steps never makes a mistake and solves it", ok && play.solved && play.mistakes === 0);
+}
+
+// A run played with a fake clock: `style` decides how it plays each room.
+function playRun(seed, { style = "perfect", daily = false, lane = 0, slips = 0 } = {}) {
+  const r = new DriftRun({ seed, daily });
+  let now = 0;
+  let guard = 0;
+  while (!r.over && guard++ < 200) {
+    if (r.phase === "map") {
+      const opts = r.options();
+      r.enter(opts[Math.min(lane, opts.length - 1)].id, now);
+    } else if (r.phase === "perk") {
+      r.pickPerk(r.perkOffer[0]);
+    } else if (r.phase === "room") {
+      const pz = r.play.puzzle;
+      // Optional slips first: a wrong check on a false cell.
+      for (let s = 0; s < slips && r.phase === "room"; s++) {
+        const key = cellKey(0, 0, (pz.solution[0][0] + 1 + s) % pz.n);
+        if (r.play.grid[key] === 1) continue;
+        while (r.phase === "room" && (r.play.grid[key] || 0) !== 1) r.tap(key, (now += 1000));
+        if (r.phase !== "room") break;
+        if (style === "sloppy") r.tap(key, (now += 1000)); // check it: wrong
+      }
+      for (let c = 0; c < pz.k && r.phase === "room"; c++) {
+        for (let p = 0; p < pz.n && r.phase === "room"; p++) {
+          const key = cellKey(c, p, pz.solution[c][p]);
+          while (r.phase === "room" && r.play && (r.play.grid[key] || 0) !== 2) r.tap(key, (now += 1000));
+        }
+      }
+    }
+  }
+  return r;
+}
+
+console.log("\n8. Drift Run maps (unchanged machinery)");
+{
+  let badShape = 0, nonDeterministic = 0, distinct = new Set();
+  for (let i = 0; i < 500; i++) {
+    const seed = "MAP" + i;
+    const m = buildRunMap(seed);
+    if (JSON.stringify(m) !== JSON.stringify(buildRunMap(seed))) nonDeterministic++;
+    distinct.add(JSON.stringify(m.acts.map((a) => a.steps.map((s) => s.map((n) => n.type)))));
+    if (m.acts.length !== 3 || m.length !== 12) badShape++;
+    for (const a of m.acts) {
+      if (a.steps.length !== STEPS_PER_ACT || a.boss.type !== "boss") badShape++;
+      let rests = 0;
+      for (const s of a.steps) {
+        if (s.length !== 2 || s[0].type === s[1].type) badShape++;
+        rests += s.filter((n) => n.type === "rest").length;
+      }
+      if (rests !== 1) badShape++;
+    }
+    const first = m.acts[0].steps[0].map((n) => n.type).sort().join(",");
+    if (first !== "elite,room") badShape++;
+  }
+  check("every map is 3 acts of 3 left/right steps plus a boss (500 maps)", badShape === 0, `bad=${badShape}`);
+  check("the same seed always draws the same map", nonDeterministic === 0, `diff=${nonDeterministic}`);
+  check("different seeds draw different maps", distinct.size > 20, `distinct=${distinct.size}`);
+  const d1 = dailyRunSeed(new Date(2026, 9, 17, 0, 5));
+  check("the Daily Run seed is the same all day", d1 === dailyRunSeed(new Date(2026, 9, 17, 23, 55)) && d1 === "RUN-20261017", d1);
+  check("the Daily Run seed changes the next day", d1 !== dailyRunSeed(new Date(2026, 9, 18)) && isDailyRunSeed(d1) && !isDailyRunSeed("K7F2QM"));
+  check("puzzles grow act by act, and every boss is the biggest grid of its act", ACTS.every((a) =>
+    PRESETS[a.boss].n * PRESETS[a.boss].cats.length >= PRESETS[a.elite].n * PRESETS[a.elite].cats.length &&
+    PRESETS[a.elite].n * PRESETS[a.elite].cats.length >= PRESETS[a.room].n * PRESETS[a.room].cats.length) &&
+    ACTS[2].boss === "expert");
+  check("every elite has a clock", ACTS.every((a) => ELITE_MS[a.elite] > 0));
+}
+
+console.log("\n9. Drift Run rooms are puzzles: hearts, perks, the end");
+{
+  let lost = 0, notWon = 0;
+  for (let i = 0; i < 40; i++) {
+    const r = playRun("WIN" + i, { lane: i % 2 });
+    if (!r.won) notWon++;
+    if (r.hearts <= 0) lost++;
+  }
+  check("a perfect player wins every run (40 runs, both lanes)", notWon === 0 && lost === 0, `notWon=${notWon}`);
+  const r = playRun("FULL");
+  const res = r.result(777);
+  const rests = res.path.filter((id) => buildRunMap("FULL").acts.some((a) => a.steps.flat().some((n) => n.id === id && n.type === "rest"))).length;
+  check("a won run cleared all 12 depths, one puzzle per non-campfire step", res.won && res.depth === 12 && res.rooms === 12 - rests && res.bossesBeaten === 3, JSON.stringify(res).slice(0, 200));
+  check("a run is one history record of the new kind", res.game === "clues" && res.mode === "sc-run" && res.playedAt === 777 && res.seed === "FULL");
+  check("a clean run counts clean rooms and no slips", res.mistakes === 0 && res.cleanRooms === res.rooms && res.hints === 0);
+  check("same seed, same play, same result", JSON.stringify(playRun("DET").result(1)) === JSON.stringify(playRun("DET").result(1)));
+  check("the rooms a run deals depend only on the seed and the room", JSON.stringify(generatePuzzle("DET:a0s0l0", presetFor({ act: 0, type: "room" }))) ===
+    JSON.stringify((() => { const x = new DriftRun({ seed: "DET" }); const n = x.options().find((o) => o.type === "room"); x.enter(n.id); return x.play.puzzle; })()));
+
+  const sloppy = playRun("SLIP", { style: "sloppy", slips: 1 });
+  check("wrong checks cost hearts until the run ends", sloppy.over && !sloppy.won && sloppy.hearts === 0, `hearts=${sloppy.hearts} phase=${sloppy.phase}`);
+  check("a lost run still records how deep it went", sloppy.result().depth >= 1 && sloppy.result().mistakes >= 3);
+
+  // Shield, lantern, mend, heart.
+  const x = new DriftRun({ seed: "PERKS" });
+  const roomNode = x.options().find((o) => o.type === "room");
+  x.enter(roomNode.id, 0);
+  x.shields = 1; x.play.shields = 1;
+  const pz = x.play.puzzle;
+  const bad = cellKey(0, 0, (pz.solution[0][0] + 1) % pz.n);
+  x.tap(bad, 1); const rec = x.tap(bad, 2);
+  check("a shield takes a wrong check instead of a heart", rec.wrong && rec.shielded && x.hearts === 3 && x.shields === 0);
+  x.tap(cellKey(0, 0, (pz.solution[0][0] + 2) % pz.n), 3);
+  const rec2 = x.tap(cellKey(0, 0, (pz.solution[0][0] + 2) % pz.n), 4);
+  check("without one, a wrong check costs a heart", rec2.wrong && !rec2.shielded && x.hearts === 2);
+  const hintsBefore = x.hints;
+  check("a hint is spent from the run's supply", x.hint(5) && x.hints === hintsBefore - 1 && x.hintsUsed === 1);
+  x.hints = 0;
+  check("no hints left means no hint", x.hint(6) === null);
+
+  const y = new DriftRun({ seed: "PERKS" });
+  y.phase = "perk"; y.perkOffer = ["lantern", "heart", "mend"]; y.node = { type: "elite", act: 0 };
+  y.pickPerk("lantern");
+  check("Lantern adds two hints", y.hints === 3);
+  y.phase = "perk"; y.perkOffer = ["heart"]; y.node = { type: "elite", act: 0 };
+  y.pickPerk("heart");
+  check("Extra heart raises the cap and fills it", y.maxHearts === 4 && y.hearts === 4);
+  check("every perk has a label", Object.values(PERKS).every((p) => p.label && p.blurb) && MAX_HEARTS === 5);
+
+  // An elite's clock: running out costs a heart and stops the clock.
+  const e = new DriftRun({ seed: "ELITE" });
+  const eliteNode = e.options().find((o) => o.type === "elite");
+  e.enter(eliteNode.id, 0);
+  check("an elite room is timed", e.timed && e.timeLimitMs === ELITE_MS[presetFor(eliteNode)]);
+  check("running out of time costs a heart, once", e.timeout(e.timeLimitMs + 1) && e.hearts === 2 && !e.timed && e.timeout(9e9) === false);
+  const slowRun = new DriftRun({ seed: "ELITE" });
+  slowRun.slow = true;
+  slowRun.enter(eliteNode.id, 0);
+  check("Slow clock gives half as long again", slowRun.timeLimitMs === Math.round(ELITE_MS[presetFor(eliteNode)] * 1.5));
+  const chamber = new DriftRun({ seed: "ELITE" });
+  chamber.enter(chamber.options().find((o) => o.type === "room").id, 0);
+  check("an ordinary chamber has no clock", !chamber.timed && chamber.timeout(1) === false);
+
+  const hist = [{ game: "clues", mode: "sc-run", seed: "RUN-20261017", score: 5 }, { mode: "run", seed: "RUN-20261017", score: 9 }];
+  check("today's Daily Run is found from history, never an old-style run", findDailyRun(hist, new Date(2026, 9, 17)).score === 5);
+}
+
+console.log("\n10. Ranks and achievements");
 {
   check("rank 0 XP is the first rank", rankFor(0).index === 1);
   check("rank climbs with XP", rankFor(200000).index === 8 && rankFor(200000).next === null);
-  check("rank progress stays in 0..1",
-    [0, 1500, 9000, 60000, 999999].every((x) => { const r = rankFor(x); return r.progress >= 0 && r.progress <= 1; }));
-
   const empty = { history: [], duels: [], ruleStats: {}, unlocked: [], xp: 0, longestStreak: 0, bestBrain: 0, bestScore: 0 };
   const rows = achievementRows(empty);
-  check("a new player has every achievement locked", rows.every((r) => r.tier === 0), rows.filter(r=>r.tier>0).map(r=>r.id).join(","));
-  check("achievement rows never NaN",
-    rows.every((r) => Number.isFinite(r.progress) && r.progress >= 0 && r.progress <= 1));
-
-  const played = { ...empty, history: [{ adaptations: 6, maxStreak: 9, trials: 20, correct: 18, byRule: {} }], longestStreak: 3, bestBrain: 55 };
-  const rows2 = achievementRows(played);
-  const adapt = rows2.find((r) => r.id === "adapt");
-  check("stepped achievement advances one tier at 6 adaptations", adapt.tier === 1, `tier=${adapt.tier}`);
-  check("lifetime stats aggregate history", lifetimeStats(played).adaptations === 6);
+  check("a new player has every achievement locked", rows.every((r) => r.tier === 0));
+  check("achievement rows never NaN", rows.every((r) => Number.isFinite(r.progress) && r.progress >= 0 && r.progress <= 1));
+  const oldOnly = { ...empty, history: [{ mode: "quick", adaptations: 6, maxStreak: 9, trials: 20, correct: 18, score: 900, playedAt: 1 }] };
+  check("old hidden-rule games do not unlock the new achievements", achievementRows(oldOnly).every((r) => r.tier === 0));
+  check("old games are counted as kept", lifetimeStats(oldOnly).oldGames === 1 && lifetimeStats(oldOnly).solved === 0);
+  const pzr = { game: "clues", mode: "sc-practice", solved: true, preset: "expert", n: 5, k: 3, ms: 100000, mistakes: 0, hints: 0, score: 2000, playedAt: 2 };
+  const runr = { game: "clues", mode: "sc-run", rooms: 4, cleanRooms: 2, bossesBeaten: 1, won: false, depth: 5, score: 3000, playedAt: 3 };
+  const roomr = { ...pzr, mode: "sc-room", preset: "medium", n: 4, k: 2, ms: 200000, team: 3, playedAt: 4 };
+  const prof = { ...empty, history: [...oldOnly.history, pzr, runr, roomr] };
+  const st = lifetimeStats(prof);
+  check("puzzles solved counts singles, rooms and run rooms", st.solved === 6 && st.clean === 4 && st.teamSolves === 1, JSON.stringify(st));
+  const un = unlockedSet(prof, pzr);
+  check("first solve, quick mind, grandmaster, team and boss unlock", ["sc_solved.1", "sc_quick", "sc_expert", "sc_team"].every((id) => un.has(id)) &&
+    unlockedSet(prof, runr).has("sc_boss"));
+  check("XP: new records are their score, old keep their formula, none is NaN",
+    xpFor(pzr) === 2000 && xpFor(oldOnly.history[0]) === 900 + 6 * 40 + 18 * 5 && xpFor({}) === 0 && xpFor({ score: 5 }) === 5 && xpFor(null) === 0);
 }
 
-console.log("\n12. Profile merge never loses or invents progress");
+console.log("\n11. History: old games survive, new games join, nothing is counted twice");
+{
+  // A tiny localStorage, so load() and recordResult() run for real.
+  const mem = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (mem.has(k) ? mem.get(k) : null),
+    setItem: (k, v) => mem.set(k, String(v)),
+    removeItem: (k) => mem.delete(k),
+  };
+  const oldGame = (t, score, mode = "quick") => ({
+    seed: "OLD" + t, mode, playedAt: t, score, level: 2, trials: 20, correct: 16, accuracy: 0.8, maxStreak: 5,
+    ruleChanges: 2, adaptations: 2, brainScore: 61, byRule: { MOST_PIPS: { seen: 10, correct: 8 } }, log: [],
+  });
+  const oldProfile = {
+    name: "Mridul", avatar: 3, updatedAt: 50, xp: 0, unlocked: ["adapt.1", "bossbreaker"], ruleStats: {},
+    history: [oldGame(100, 1000), oldGame(200, 2000, "daily"), { seed: "RUN-20261001", mode: "run", playedAt: 300, score: 4000, depth: 7, adaptations: 3, correct: 40 }],
+    bestScore: 4000, bestBrain: 61, streak: 2, longestStreak: 4, lastDailyDay: "2026-10-01", freezes: 1,
+    dailyResults: { "2026-10-01": oldGame(200, 2000, "daily") }, tierUnlocked: 3, duels: [{ seed: "X", at: 5 }], createdAt: 10,
+  };
+  localStorage.setItem("ruledrift.v2", JSON.stringify(oldProfile));
+  let prof = storage.load();
+  check("an old profile loads with every old game", prof.history.length === 3 && prof.name === "Mridul");
+  check("old XP is rebuilt from old history without NaN", Number.isFinite(prof.xp) && prof.xp === oldProfile.history.reduce((s, r) => s + xpFor(r), 0), String(prof.xp));
+
+  const play = new PuzzlePlay(generatePuzzle(dailyClueSeed(new Date(2026, 9, 2)), "easy"));
+  solveByHand(play);
+  const daily = puzzleResult(play, { mode: "sc-daily", ms: 40000, daily: true, playedAt: new Date(2026, 9, 2, 9).getTime() });
+  const out = storage.recordResult(prof, daily);
+  prof = storage.load();
+  check("a new game joins the old history", prof.history.length === 4 && prof.history.filter((r) => r.game === "clues").length === 1);
+  check("old games are untouched", JSON.stringify(prof.history.slice(0, 3)) === JSON.stringify(oldProfile.history));
+  check("XP stays a real number and adds exactly the new score", Number.isFinite(prof.xp) && out.xpGained === daily.score);
+  check("best score and best brain never go NaN", Number.isFinite(prof.bestScore) && prof.bestBrain === 61);
+  check("the new Daily continues the day streak", prof.streak === 3 && prof.lastDailyDay === "2026-10-02", `streak=${prof.streak}`);
+  check("old achievements stay unlocked, new ones are added", prof.unlocked.includes("adapt.1") && prof.unlocked.includes("sc_solved.1"));
+
+  const phone = { ...prof, history: [...prof.history.slice(0, 2), { game: "clues", mode: "sc-practice", seed: "P1", playedAt: 999, score: 700, solved: true, n: 3, k: 1 }], updatedAt: 60 };
+  const m = mergeProfiles(prof, phone);
+  const sum = m.history.reduce((s, r) => s + xpFor(r), 0);
+  check("merging old and new history keeps every distinct game once", m.history.length === 5, String(m.history.length));
+  check("merged XP is recomputed from history, never summed", m.xp === Math.max(prof.xp, phone.xp, sum) && m.xp < prof.xp + phone.xp, `${m.xp}`);
+  const again = mergeProfiles(mergeProfiles(m, phone), prof);
+  check("merging again changes nothing", again.xp === m.xp && again.history.length === 5);
+  check("merge order does not matter", JSON.stringify(mergeProfiles(phone, prof).history) === JSON.stringify(m.history));
+  check("an export with both kinds imports cleanly", (() => {
+    const r = parseImport(JSON.stringify(m));
+    return r.ok && r.profile.history.length === 5 && r.profile.history.some((x) => x.mode === "run") && r.profile.history.some((x) => x.mode === "sc-daily");
+  })());
+  delete globalThis.localStorage;
+}
+
+console.log("\n12. Rooms: the pure parts");
+{
+  const doc = { a: "x", n: 3, f: 1.5, b: true, z: null, arr: [1, "two"], empty: [], m: { k: { deep: 2 } }, none: {} };
+  const back = fromFs(toFs(doc));
+  check("values round-trip through Firestore's format", JSON.stringify(back) === JSON.stringify(doc), JSON.stringify(back));
+  check("dates become timestamps and come back as ms", fromFs(toFs(new Date(5000))) === 5000);
+  check("plain field paths stay plain, odd ones are quoted", fieldPath("grid.g0r1c2") === "grid.g0r1c2" && fieldPath("players.u:1") === "players.`u:1`");
+  const pb = patchBody({ "grid.g0r1c2": 2, "grid.g0r0c0": undefined, status: "playing" });
+  check("a patch lists every path in its mask", pb.mask.join(",") === "grid.g0r1c2,grid.g0r0c0,status");
+  check("a patch only sends the values it sets (a cleared cell is deleted)",
+    pb.fields.grid.mapValue.fields.g0r1c2.integerValue === "2" && !("g0r0c0" in pb.fields.grid.mapValue.fields) && pb.fields.status.stringValue === "playing");
+
+  check("no such room is an absence, not a failure", readRoomResponse(404).ok === true && readRoomResponse(404).room === null);
+  check("a failed read is a failure", readRoomResponse(0).ok === false && readRoomResponse(403).ok === false);
+  const data = roomsLib.newRoomData({ uid: "u_a", name: "A", preset: "medium", now: 1000, seed: "ROOM-X" });
+  const read = readRoomResponse(200, { name: "projects/p/databases/(default)/documents/rooms/ABC123", fields: toFs(data).mapValue.fields });
+  check("a room reads back whole", read.ok && read.room.code === "ABC123" && read.room.host === "u_a" && read.room.players.u_a.name === "A" &&
+    read.room.expiresAt === 1000 + 24 * 3600000 && read.room.status === "lobby");
+
+  const r = { ...read.room, players: { u_c: { name: "C", joinedAt: 30 }, u_a: { name: "A", joinedAt: 10 }, u_b: { name: "B", joinedAt: 20 } } };
+  const order = roomsLib.seatOrder(r);
+  check("players are seated in the order they joined", order.join(",") === "u_a,u_b,u_c");
+  check("starting locks the deal", JSON.stringify(roomsLib.startUpdates(r, 5)) === JSON.stringify({ status: "playing", order, startedAt: 5 }));
+  let dealOk = true;
+  for (let clues = 4; clues <= 16; clues++) {
+    for (let players = 1; players <= 6; players++) {
+      const ord = Array.from({ length: players }, (_, i) => "u" + i);
+      const all = ord.flatMap((u) => cluesFor(clues, ord, u)).sort((a, b) => a - b);
+      const sizes = ord.map((u) => cluesFor(clues, ord, u).length);
+      if (all.join(",") !== Array.from({ length: clues }, (_, i) => i).join(",")) dealOk = false;
+      if (Math.max(...sizes) - Math.min(...sizes) > 1) dealOk = false;
+    }
+  }
+  check("the deal gives every clue to exactly one player, evenly", dealOk);
+  check("someone not in the deal gets no clues", cluesFor(8, ["u0", "u1"], "late").length === 0);
+  check("a join writes only the caller's own entry", Object.keys(roomsLib.joinUpdates("u_z", "Z", 1)).join() === "players.u_z");
+  check("grid writes are one field per cell", JSON.stringify(Object.keys(roomsLib.gridUpdates({ g0r0c0: 1, g0r1c1: 0 }))) === '["grid.g0r0c0","grid.g0r1c1"]' &&
+    roomsLib.gridUpdates({ g0r1c1: 0 })["grid.g0r1c1"] === undefined);
+  const posts = roomsLib.postsOf({ posts: { c4: { uid: "u_b", by: "B", at: 9 }, c1: { uid: "u_a", by: "A", at: 3 }, junk: { at: 1 } } });
+  check("shared clues come back oldest first", posts.map((p) => p.clue).join(",") === "1,4");
+  const full = { players: Object.fromEntries(Array.from({ length: 6 }, (_, i) => ["u" + i, { name: "P", joinedAt: i }])), expiresAt: 10000 };
+  check("a full room turns a seventh player away", !roomsLib.canJoin(full, "u9", 5).ok && roomsLib.canJoin(full, "u0", 5).already);
+  check("a closed room turns everyone away", !roomsLib.canJoin(full, "u0", 20000).ok);
+  check("codes are six typeable characters", /^[A-HJ-NP-Z2-9]{6}$/.test(roomsLib.newRoomCode()) && roomsLib.normalizeRoomCode(" ab-c12x9 ") === "ABC12X");
+}
+
+console.log("\n13. Share text never spoils the answer");
+{
+  let spoiled = 0;
+  for (let i = 0; i < 100; i++) {
+    const pz = generatePuzzle("SH" + i, PRACTICE[i % PRACTICE.length]);
+    const play = new PuzzlePlay(pz);
+    solveByHand(play);
+    const txt = buildShareText(puzzleResult(play, { mode: "sc-daily", ms: 61000 }), { dailyNumber: 290, url: "https://x/" });
+    if (pz.people.some((p) => txt.includes(p)) || /circle|square|triangle|diamond|hexagon|teal|rose|violet/.test(txt)) spoiled++;
+    if (!/Daily #290/.test(txt) || !/1:01/.test(txt)) spoiled++;
+  }
+  check("no share text names a person or a rune (100 puzzles)", spoiled === 0, `bad=${spoiled}`);
+  const runTxt = buildShareText(playRun("SHARE").result(), { dailyNumber: 3 });
+  check("a run's share text says how deep it went", /Cleared all three acts|Depth/.test(runTxt) && /\d+ puzzles/.test(runTxt), runTxt);
+}
+
+console.log("\n14. Profile merge never loses or invents progress");
 {
   const mkResult = (t, score, mode = "quick") => ({
     seed: "S" + t, mode, playedAt: t, score, level: 2, trials: 20, correct: 16,
@@ -412,7 +640,7 @@ console.log("\n12. Profile merge never loses or invents progress");
   check("streaks on no days are zero", streaksFromDays([]).longest === 0);
 }
 
-console.log("\n13. Cloud is optional and fails soft");
+console.log("\n15. Cloud is optional and fails soft");
 {
   check("cloud config is all-or-nothing",
     (Boolean(FIREBASE_API_KEY) && Boolean(FIREBASE_PROJECT_ID)) || (!FIREBASE_API_KEY && !FIREBASE_PROJECT_ID));
@@ -480,7 +708,7 @@ console.log("\n13. Cloud is optional and fails soft");
   check("a garbage token gives no player id", tokenClaims("nope").uid === "");
 }
 
-console.log("\n14. Import merges, never replaces");
+console.log("\n16. Import merges, never replaces");
 {
   check("non-JSON is refused with a reason", parseImport("hello").ok === false && /not Ruledrift/.test(parseImport("hello").error));
   check("a JSON list is refused", parseImport("[1,2]").ok === false);
@@ -495,357 +723,6 @@ console.log("\n14. Import merges, never replaces");
     merged.history.length === 2 && merged.history.some((x) => x.seed === "CCC") && merged.history.some((x) => x.seed === "BBB"));
   const again = mergeProfiles(merged, r.profile);
   check("importing the same export twice adds nothing", again.history.length === 2);
-}
-
-console.log("\n15. The classic game is untouched by Drift Run");
-{
-  // A fingerprint of 60 classic games (5 modes x 4 seeds x 3 tiers), taken from
-  // the engine before Drift Run existed. If this moves, old seeds, old duels and
-  // old dailies would no longer replay the same boards.
-  let acc = "";
-  for (const mode of ["quick", "daily", "zen", "blitz", "gauntlet"]) for (const seed of ["K7F2QM", "DAILY-20261017", "AB12CD", "ZZZZZZ"]) for (const tier of [1, 2, 3]) {
-    const g = new Game({ seed, mode, maxTier: tier });
-    let n = 0;
-    while (!g.over && n++ < 150) {
-      const t = g.trial;
-      acc += t.tiles.map((x) => x.shape[0] + x.color[0] + x.count).join("") + t.target + t.rule[0];
-      g.answer(n % 7 === 3 ? (t.target + 1) % 5 : t.target, 900);
-    }
-    acc += "|" + g.score;
-  }
-  check("classic boards are byte-identical to before Drift Run", hashSeed(acc).toString(16) === "1ab5529",
-    hashSeed(acc).toString(16));
-  check("the normal rule pool never contains a boss rule",
-    [1, 2, 3].every((t) => rulesUpToTier(t).every((r) => !isBossRule(r.id))));
-  check("there are still exactly eight core rules", RULES.length === 8 && BOSS_RULES.length === 3);
-}
-
-// Independent oracle: which tiles satisfy each rule's defining property. Written
-// separately from evaluateRule, so a bug in one cannot hide in the other.
-function oracle(rule, tiles, prev) {
-  const idx = [0, 1, 2, 3, 4];
-  const countOf = (key) => (i) => tiles.filter((t) => t[key] === tiles[i][key]).length;
-  const colourN = countOf("color");
-  const shapeN = countOf("shape");
-  const counts = tiles.map((t) => t.count);
-  switch (rule) {
-    case "MOST_PIPS": return idx.filter((i) => counts[i] === Math.max(...counts));
-    case "FEWEST_PIPS": return idx.filter((i) => counts[i] === Math.min(...counts));
-    case "UNIQUE_COLOR": return idx.filter((i) => colourN(i) === 1);
-    case "UNIQUE_SHAPE": return idx.filter((i) => shapeN(i) === 1);
-    case "ODD_PARITY": return idx.filter((i) => tiles.filter((t) => t.count % 2 === tiles[i].count % 2).length === 1);
-    case "MATCH_LAST_COLOR": return prev ? idx.filter((i) => tiles[i].color === prev.color) : [];
-    case "MATCH_LAST_SHAPE": return prev ? idx.filter((i) => tiles[i].shape === prev.shape) : [];
-    case "SHARES_NOTHING": return prev ? idx.filter((i) => tiles[i].color !== prev.color && tiles[i].shape !== prev.shape) : [];
-    case "BOSS_DOUBLE_LONER": return idx.filter((i) => colourN(i) === 1 && shapeN(i) === 1);
-    case "BOSS_RICH_TWIN": {
-      const pairColours = [...new Set(tiles.map((t) => t.color))].filter((c) => tiles.filter((t) => t.color === c).length === 2);
-      if (pairColours.length !== 1) return [];
-      const tw = idx.filter((i) => tiles[i].color === pairColours[0]);
-      return tw.filter((i) => tw.every((j) => j === i || tiles[i].count > tiles[j].count));
-    }
-    case "BOSS_HUMBLE_LONER": {
-      const lone = idx.filter((i) => shapeN(i) === 1);
-      if (lone.length < 2) return [];
-      return lone.filter((i) => lone.every((j) => j === i || tiles[i].count < tiles[j].count));
-    }
-    default: return [];
-  }
-}
-
-/**
- * Plays a whole Drift Run. `style` decides the taps: "perfect" always right,
- * "sloppy" mostly right with deliberate old-rule mistakes, "bad" always tile 0.
- * `onTrial` sees every board before it is answered.
- */
-function playRun(seed, { style = "perfect", rng = null, onTrial = null, daily = false } = {}) {
-  const run = new DriftRun({ seed, daily });
-  let guard = 0;
-  while (!run.over && guard++ < 6000) {
-    if (run.phase === "map") {
-      const opts = run.options();
-      run.enter(opts[rng ? rng.int(opts.length) : 0].id);
-    } else if (run.phase === "perk") {
-      run.pickPerk(run.perkOffer[rng ? rng.int(run.perkOffer.length) : 0]);
-    } else if (run.phase === "room") {
-      const g = run.game;
-      const t = g.trial;
-      if (onTrial) onTrial(run, g, t);
-      let pick = t.target;
-      if (style === "bad") pick = 0;
-      else if (style === "sloppy") {
-        const roll = rng.next();
-        const old = g.previousRule ? t.answers[g.previousRule] : -1;
-        if (roll < 0.12 && old >= 0) pick = old;
-        else if (roll < 0.2) pick = rng.int(5);
-      }
-      run.answer(pick, 700 + (rng ? rng.int(500) : 0));
-    }
-  }
-  return run;
-}
-
-console.log("\n16. Drift Run maps");
-{
-  let badShape = 0, nonDeterministic = 0, distinct = new Set();
-  for (let i = 0; i < 500; i++) {
-    const seed = "MAP" + i;
-    const m = buildRunMap(seed);
-    if (JSON.stringify(m) !== JSON.stringify(buildRunMap(seed))) nonDeterministic++;
-    distinct.add(JSON.stringify(m.acts.map((a) => a.steps.map((s) => s.map((n) => n.type)))));
-    if (m.acts.length !== 3 || m.length !== 12) badShape++;
-    for (const a of m.acts) {
-      if (a.steps.length !== STEPS_PER_ACT || a.boss.type !== "boss") badShape++;
-      let rests = 0;
-      for (const s of a.steps) {
-        if (s.length !== 2 || s[0].type === s[1].type) badShape++;
-        rests += s.filter((n) => n.type === "rest").length;
-      }
-      if (rests !== 1) badShape++;
-    }
-    const first = m.acts[0].steps[0].map((n) => n.type).sort().join(",");
-    if (first !== "elite,room") badShape++;
-  }
-  check("every map is 3 acts of 3 left/right steps plus a boss (500 maps)", badShape === 0, `bad=${badShape}`);
-  check("every act has exactly one campfire, and every choice is a real choice", badShape === 0);
-  check("the same seed always draws the same map", nonDeterministic === 0, `diff=${nonDeterministic}`);
-  check("different seeds draw different maps", distinct.size > 20, `distinct=${distinct.size}`);
-
-  const d1 = dailyRunSeed(new Date(2026, 9, 17, 0, 5));
-  const d1b = dailyRunSeed(new Date(2026, 9, 17, 23, 55));
-  const d2 = dailyRunSeed(new Date(2026, 9, 18));
-  check("the Daily Run seed is the same all day", d1 === d1b && d1 === "RUN-20261017", d1);
-  check("the Daily Run seed changes the next day", d1 !== d2);
-  check("the Daily Run is not the classic Daily", d1 !== dailySeedCode(new Date(2026, 9, 17)) && isDailyRunSeed(d1) && !isDailyRunSeed("K7F2QM"));
-}
-
-console.log("\n17. Drift Run boards are always fair");
-{
-  const tally = { room: 0, elite: 0, boss: 0, bossRule: 0, switches: 0, bossSwitches: 0 };
-  const byBoss = {};
-  let unsolvable = 0, notExactlyOne = 0, invisible = 0, shortcut = 0, staleEcho = 0;
-  const onTrial = (run, g, t) => {
-    tally[run.node.type]++;
-    const prev = g.prevTarget;
-    const hits = oracle(t.rule, t.tiles, prev);
-    if (t.target < 0 || t.target > 4 || evaluateRule(t.rule, t.tiles, prev) !== t.target) unsolvable++;
-    if (hits.length !== 1 || hits[0] !== t.target) notExactlyOne++;
-    if (ruleNeedsPrev(t.rule) && !prev) staleEcho++;
-    if (isBossRule(t.rule)) {
-      tally.bossRule++;
-      byBoss[t.rule] = (byBoss[t.rule] || 0) + 1;
-      if (shortcutHits(t.rule, t.tiles, prev, t.target)) shortcut++;
-    }
-    if (t.isSwitchTrial) {
-      tally.switches++;
-      if (isBossRule(t.rule) || isBossRule(g.previousRule)) tally.bossSwitches++;
-      if (evaluateRule(g.previousRule, t.tiles, prev) === t.target) invisible++;
-    }
-  };
-  const rng = makeRng(hashSeed("run-fair"));
-  let wins = 0, deaths = 0;
-  for (let i = 0; i < 500; i++) {
-    const r = playRun("FAIR" + i, { style: i % 2 ? "sloppy" : "perfect", rng, onTrial });
-    if (r.won) wins++; else deaths++;
-  }
-  const boards = tally.room + tally.elite + tally.boss;
-  check(`every Drift Run board has exactly one correct tile (${boards} boards, 500 runs)`, unsolvable === 0 && notExactlyOne === 0,
-    `unsolvable=${unsolvable} notOne=${notExactlyOne}`);
-  check(`every node type was really played (room ${tally.room}, elite ${tally.elite}, boss ${tally.boss})`,
-    tally.room > 1000 && tally.elite > 1000 && tally.boss > 1000);
-  check(`all three boss rules were dealt (${Object.entries(byBoss).map(([k, v]) => k.slice(5) + " " + v).join(", ")})`,
-    BOSS_RULES.every((b) => (byBoss[b.id] || 0) > 200));
-  check("no boss board can be won with a one-attribute idea", shortcut === 0, `shortcut=${shortcut}`);
-  check(`a rule change is never invisible (${tally.switches} changes, ${tally.bossSwitches} into or out of a boss rule)`,
-    invisible === 0 && tally.bossSwitches > 500, `invisible=${invisible}`);
-  check("no echo rule without a previous winner in any room", staleEcho === 0, `bad=${staleEcho}`);
-  check(`perfect runs clear the run, sloppy ones can fail (${wins} won, ${deaths} lost)`, wins >= 250 && deaths > 0);
-
-  // The constructive fallback, driven directly: it must be just as fair.
-  const frng = makeRng(hashSeed("fallback"));
-  let fbad = 0;
-  for (const b of BOSS_RULES) for (let i = 0; i < 3000; i++) {
-    const { tiles, target } = constructTrial(frng, b.id, null);
-    const hits = oracle(b.id, tiles, null);
-    if (hits.length !== 1 || hits[0] !== target || shortcutHits(b.id, tiles, null, target)) fbad++;
-  }
-  check("the boss-board fallback builder is fair too (9000 boards)", fbad === 0, `bad=${fbad}`);
-
-  // Every boss rule against every core rule, both directions, with and without a previous winner.
-  const srng = makeRng(hashSeed("boss-switch"));
-  let sbad = 0, sn = 0;
-  for (const b of BOSS_RULES) for (const r of RULES) for (let i = 0; i < 120; i++) {
-    const prev = i % 2 ? { shape: srng.pick(["circle", "square", "triangle", "diamond", "hex"]), color: srng.pick(["cyan", "amber", "magenta", "lime", "violet"]), count: 3 } : null;
-    if (ruleNeedsPrev(r.id) && !prev) continue;
-    for (const [now, old] of [[b.id, r.id], [r.id, b.id]]) {
-      const g = generateTrial(srng, now, prev, old);
-      sn++;
-      const hits = oracle(now, g.tiles, prev);
-      if (hits.length !== 1 || hits[0] !== g.target || evaluateRule(old, g.tiles, prev) === g.target) sbad++;
-    }
-  }
-  check(`boss <-> core rule switches stay fair and visible (${sn} switches)`, sbad === 0, `bad=${sbad}`);
-}
-
-console.log("\n18. Drift Run is deterministic");
-{
-  const fp = (seed) => {
-    const out = [];
-    const r = playRun(seed, {
-      style: "sloppy", rng: makeRng(hashSeed("same-hands")),
-      onTrial: (run, g, t) => out.push(run.node.id + ":" + t.tiles.map((x) => x.shape[0] + x.color[0] + x.count).join("") + t.target),
-    });
-    return JSON.stringify([out, r.score, r.path, r.taken, r.hearts]);
-  };
-  check("the same seed and the same taps give the identical run", fp("SAMESEED") === fp("SAMESEED"));
-  check("a different seed gives a different run", fp("SAMESEED") !== fp("OTHERSEED"));
-
-  // A room's boards depend only on the seed and the room, never on the path taken to it.
-  const a = new DriftRun({ seed: "PATHS" });
-  const b = new DriftRun({ seed: "PATHS" });
-  a.enter(a.options()[0].id);
-  b.enter(b.options()[0].id);
-  check("two players entering the same room see the same first board",
-    JSON.stringify(a.trial.tiles) === JSON.stringify(b.trial.tiles));
-  const bossA = new DriftRun({ seed: "BOSSPATH" });
-  const bossB = new DriftRun({ seed: "BOSSPATH" });
-  const walk = (run, lane) => {
-    while (run.step < STEPS_PER_ACT) {
-      if (run.phase === "map") run.enter(run.options()[Math.min(lane, run.options().length - 1)].id);
-      else if (run.phase === "perk") run.pickPerk(run.perkOffer[0]);
-      else run.answer(run.trial.target, 800);
-    }
-    run.enter(run.options()[0].id);
-    return run.trial.tiles;
-  };
-  check("the act-one boss deals the same first board whichever path led there",
-    JSON.stringify(walk(bossA, 0)) === JSON.stringify(walk(bossB, 1)));
-  check("a boss room opens on its boss rule", bossA.game.currentRule === "BOSS_DOUBLE_LONER", bossA.game.currentRule);
-}
-
-console.log("\n19. Hearts, perks and the end of a run");
-{
-  const bad = playRun("BADRUN", { style: "bad" });
-  check("a bad player loses every heart and the run ends", bad.over && !bad.won && bad.hearts <= 0 && bad.phase === "over");
-  const good = playRun("GOODRUN", { style: "perfect" });
-  check("a perfect player clears all 12 nodes and wins", good.won && good.depth === 12 && good.bossesBeaten === 3,
-    `depth=${good.depth} bosses=${good.bossesBeaten}`);
-
-  const r = good.result();
-  check("a run result is a normal history record", r.mode === "run" && r.seed === "GOODRUN" && typeof r.playedAt === "number" &&
-    r.log.length === r.trials && r.accuracy === 1 && r.brainScore >= 0 && r.brainScore <= 100 && r.level === 12);
-  check("a run result carries depth, bosses and perks", r.depth === 12 && r.length === 12 && r.won === true &&
-    r.bossesBeaten === 3 && Array.isArray(r.perks) && r.perks.length >= 3, JSON.stringify({ d: r.depth, p: r.perks }));
-  check("boss rules show up in the run's per-rule tally", BOSS_RULES.some((b) => r.byRule[b.id]));
-  check("a lost run reports where it stopped", bad.result().depth < 12 && bad.result().won === false);
-
-  // The first board of every room is a free look: you cannot know a rule you have not seen.
-  const fresh = new DriftRun({ seed: "FREEFIRST" });
-  fresh.enter(fresh.options()[0].id);
-  const t0 = fresh.trial;
-  fresh.answer((t0.target + 1) % 5, 800);
-  check("a wrong first board in a room costs no heart", fresh.hearts === 3, `hearts=${fresh.hearts}`);
-  const t1 = fresh.trial;
-  fresh.answer((t1.target + 1) % 5, 800);
-  check("a wrong board after that does", fresh.hearts === 2, `hearts=${fresh.hearts}`);
-
-  // Shield: forgive exactly one perseverative error.
-  let shieldOk = false, shieldSecond = false, tried = 0;
-  for (let i = 0; i < 200 && !shieldOk; i++) {
-    const run = new DriftRun({ seed: "SHIELD" + i });
-    run.perks.shield = 1;
-    run.enter(run.options()[0].id);
-    let guard = 0, hits = 0;
-    while (run.phase === "room" && guard++ < 60) {
-      const g = run.game;
-      const t = g.trial;
-      const old = g.previousRule ? t.answers[g.previousRule] : -1;
-      if (!t.isSwitchTrial && g.previousRule && old >= 0 && old !== t.target) {
-        tried++;
-        const before = run.hearts;
-        const rec = run.answer(old, 800);
-        hits++;
-        if (hits === 1) shieldOk = rec.perseverative && rec.shielded && run.hearts === before && run.perks.shield === 0;
-        if (hits === 2) { shieldSecond = rec.perseverative && !rec.shielded && run.hearts === before - 1; break; }
-      } else run.answer(t.target, 800);
-    }
-    if (!shieldSecond) shieldOk = false;
-  }
-  check("a shield forgives one stuck-on-the-old-rule mistake, and only one", shieldOk && shieldSecond, `tried=${tried}`);
-
-  // Perk offers and their effects, over many seeds.
-  let sawHeart = false, heartOk = true, sawSlow = false, slowOk = true, campMend = true, offersOk = true, peekOk = true;
-  for (let i = 0; i < 300; i++) {
-    const rng = makeRng(hashSeed("perk" + i));
-    const run = new DriftRun({ seed: "PERK" + i });
-    let guard = 0;
-    while (!run.over && guard++ < 3000) {
-      if (run.phase === "map") run.enter(run.options()[rng.int(2) % run.options().length].id);
-      else if (run.phase === "perk") {
-        const offer = run.perkOffer;
-        if (offer.length !== 3 || new Set(offer).size !== 3 || !offer.every((p) => PERKS[p])) offersOk = false;
-        if (run.node.type === "rest" && run.hearts < run.maxHearts && !offer.includes("mend")) campMend = false;
-        const pick = offer.includes("heart") && i % 2 ? "heart" : offer.includes("slow") ? "slow" : offer[rng.int(3)];
-        const before = { max: run.maxHearts, hearts: run.hearts };
-        run.pickPerk(pick);
-        if (pick === "heart") {
-          sawHeart = true;
-          if (run.maxHearts !== Math.min(MAX_HEARTS, before.max + 1) || run.hearts !== Math.min(run.maxHearts, before.hearts + 1)) heartOk = false;
-        }
-        if (pick === "slow") sawSlow = true;
-      } else {
-        const g = run.game;
-        if (run.perks.slow && run.node.act === 1 && run.node.type === "room" && g.timeLimitMs !== 22500) slowOk = false;
-        if (!run.perks.slow && run.node.act === 1 && run.node.type === "room" && g.timeLimitMs !== 15000) slowOk = false;
-        if (run.node.act === 0 && g.timed) slowOk = false;
-        if (run.perks.peek > 0 && rng.next() < 0.3) {
-          const fam = run.usePeek();
-          if (!fam || !fam.length || JSON.stringify(fam) !== JSON.stringify(ruleFamilies(g.currentRule))) peekOk = false;
-        }
-        run.answer(rng.next() < 0.9 ? g.trial.target : rng.int(5), 800);
-      }
-    }
-  }
-  check("every perk offer is three different real perks", offersOk);
-  check("a campfire always offers Mend to a hurt player", campMend);
-  check("Extra heart adds a full heart", sawHeart && heartOk);
-  check("act one has no clock; Slow clock stretches the act-two clock from 15s to 22.5s", sawSlow && slowOk);
-  check("a peek names the attribute family of the secret, and nothing more", peekOk);
-  const np = new DriftRun({ seed: "NOPEEK" });
-  np.enter(np.options()[0].id);
-  check("a peek with none left reveals nothing", np.usePeek() === null);
-}
-
-console.log("\n20. Drift Run results sync like every other game");
-{
-  const runA = playRun("SYNC-A", { style: "perfect" }).result();
-  runA.playedAt = 1000;
-  const runB = playRun(dailyRunSeed(new Date(2026, 9, 17)), { style: "sloppy", rng: makeRng(hashSeed("sb")), daily: true }).result();
-  runB.playedAt = 2000;
-  const quick = autoplay("SYNC-Q", 2).result();
-  quick.playedAt = 1500;
-  const sum = (h) => h.reduce((s, r) => s + xpFor(r), 0);
-  const mk = (history, updatedAt) => ({ history, dailyResults: {}, duels: [], ruleStats: {}, unlocked: [], updatedAt, xp: sum(history), bestScore: Math.max(0, ...history.map((r) => r.score)) });
-  const laptop = mk([runA, quick], 10);
-  const phone = mk([runB, quick], 20);
-  const m = mergeProfiles(laptop, phone);
-  check("merge keeps both runs and the shared quick game once", m.history.length === 3 &&
-    m.history.filter((r) => r.mode === "run").length === 2);
-  check("merged XP is recomputed from history, never summed", m.xp === sum(m.history), `${m.xp} vs ${sum(m.history)}`);
-  const again = mergeProfiles(mergeProfiles(m, phone), laptop);
-  check("merging runs again changes nothing", again.xp === m.xp && again.history.length === 3);
-  check("merge order does not matter with runs", JSON.stringify(mergeProfiles(phone, laptop).history.map((r) => r.playedAt)) ===
-    JSON.stringify(m.history.map((r) => r.playedAt)));
-  check("the best score counts runs", m.bestScore === Math.max(runA.score, runB.score, quick.score));
-  check("a run keeps its depth and perks through a merge", m.history.find((r) => r.seed === "SYNC-A").depth === 12);
-  check("today's Daily Run is found from merged history", findDailyRun(m.history, new Date(2026, 9, 17)) &&
-    findDailyRun(m.history, new Date(2026, 9, 17)).seed === "RUN-20261017" && findDailyRun(m.history, new Date(2026, 9, 18)) === null);
-
-  const imp = parseImport(JSON.stringify(m));
-  check("an export with runs imports cleanly", imp.ok && imp.profile.history.filter((r) => r.mode === "run").length === 2);
-  check("boss rules do not count towards the eight core rules",
-    lifetimeStats({ ...m, ruleStats: { BOSS_DOUBLE_LONER: { seen: 3, correct: 2 }, MOST_PIPS: { seen: 1, correct: 1 } } }).rulesSeen === 1);
-  check("Drift Run shows its own name on result screens", modeConfig("run").label === "Drift Run");
 }
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} CHECK(S) FAILED\n`);

@@ -10,10 +10,6 @@
 //    cleanly, showing up. Manufactured goals ("tap 500 times") produce a spike and
 //    then nothing.
 
-import { RULES } from "./rules.js";
-
-const CORE_IDS = new Set(RULES.map((r) => r.id));
-
 export const RANKS = [
   { at: 0, name: "Drifter" },
   { at: 2000, name: "Pattern Seeker" },
@@ -57,71 +53,56 @@ function oneOff(id, name, icon, desc, test) {
   return { id, name, icon, desc, test, stepped: false };
 }
 
+// Achievements for Split Clues. The old hidden-rule badges are retired; any a
+// player already earned stay in their saved profile, untouched.
 export const ACHIEVEMENTS = [
-  tiered("adapt", "Quick Study", "adapt", "Rule changes you recovered from",
-    [5, 25, 100], (s) => s.adaptations, ""),
-  tiered("sessions", "Regular", "stone", "Sessions played",
-    [1, 10, 50], (s) => s.sessions, ""),
+  tiered("sc_solved", "Solver", "check", "Puzzles solved",
+    [1, 25, 100], (s) => s.solved, ""),
+  tiered("sc_clean", "Clean Logic", "sparkle", "Solved with no mistakes and no hints",
+    [1, 10, 50], (s) => s.clean, ""),
   tiered("streakdays", "Habit", "flame", "Longest daily streak",
     [3, 7, 30], (s) => s.longestStreak, " days"),
-  tiered("runstreak", "On A Roll", "bolt", "Best answer streak in one run",
-    [8, 20, 40], (s) => s.bestRunStreak, ""),
-  tiered("brain", "Sharp", "spark", "Best brain score",
-    [50, 70, 85], (s) => s.bestBrain, ""),
 
-  oneOff("clean", "Clean Switch", "sparkle",
-    "Finish a run with at least 3 rule changes and zero perseverative errors",
-    (s, r) => r && r.ruleChanges >= 3 && r.perseverativeErrors === 0),
-  oneOff("flying", "Flying Start", "rocket",
-    "Get your first 10 answers right in one run",
-    (s, r) => r && r.log && r.log.length >= 10 && r.log.slice(0, 10).every((t) => t.c === 1)),
-  oneOff("instant", "Instant Read", "eye",
-    "Average under 1.2 seconds across a run of 15 or more",
-    (s, r) => r && r.trials >= 15 && r.meanRt > 0 && r.meanRt < 1200),
-  oneOff("zen", "Unhurried", "lotus",
-    "Finish a Zen run at 90% accuracy or better",
-    (s, r) => r && r.mode === "zen" && r.trials >= 12 && r.accuracy >= 0.9),
-  oneOff("blitz", "Under Pressure", "flag",
-    "Score 2,500 or more in Blitz",
-    (s, r) => r && r.mode === "blitz" && r.score >= 2500),
-  oneOff("gauntlet", "Whiplash", "spiral",
-    "Survive 8 rule changes in one Gauntlet run",
-    (s, r) => r && r.mode === "gauntlet" && r.ruleChanges >= 8),
-  oneOff("duelist", "Duelist", "swords",
-    "Compare results with a friend",
-    (s) => s.duels >= 1),
-  oneOff("codex", "Completionist", "codex",
-    "Encounter all eight rules",
-    (s) => s.rulesSeen >= 8),
-  oneOff("comeback", "Second Wind", "wind",
-    "Reach a streak of 10 after already losing two lives",
-    (s, r) => r && r.comeback === true),
-  oneOff("bossbreaker", "Bossbreaker", "crown",
+  oneOff("sc_quick", "Quick Mind", "bolt",
+    "Solve a Medium or bigger puzzle in under 2 minutes",
+    (s, r) => r && r.game === "clues" && r.solved && r.n >= 4 && r.k >= 2 && r.ms > 0 && r.ms < 120000),
+  oneOff("sc_expert", "Grandmaster", "gem",
+    "Solve an Expert puzzle without a hint",
+    (s, r) => r && r.game === "clues" && r.solved && r.preset === "expert" && r.hints === 0),
+  oneOff("sc_team", "Many Hands", "swords",
+    "Solve a puzzle with friends",
+    (s) => s.teamSolves >= 1),
+  oneOff("sc_boss", "Bossbreaker", "crown",
     "Beat a boss in Drift Run",
-    (s, r) => r && r.mode === "run" && r.bossesBeaten >= 1),
-  oneOff("deep", "Out of the Deep", "gem",
+    (s, r) => r && r.mode === "sc-run" && r.bossesBeaten >= 1),
+  oneOff("sc_deep", "Out of the Deep", "trophy",
     "Clear all three acts of one Drift Run",
-    (s, r) => r && r.mode === "run" && r.won === true),
+    (s, r) => r && r.mode === "sc-run" && r.won === true),
 ];
 
 export const ACH_BY_ID = Object.fromEntries(ACHIEVEMENTS.map((a) => [a.id, a]));
 
-/** Lifetime figures the achievements are measured against. */
+const isClues = (r) => r && r.game === "clues";
+
+/** Lifetime figures the achievements are measured against. Old games count towards XP only. */
 export function lifetimeStats(profile) {
-  const h = profile.history || [];
+  const h = (profile.history || []).filter(isClues);
+  const singles = h.filter((r) => r.mode !== "sc-run" && r.solved);
+  const runs = h.filter((r) => r.mode === "sc-run");
+  const times = singles.filter((r) => r.ms > 0);
   return {
-    sessions: h.length,
-    adaptations: h.reduce((a, r) => a + (r.adaptations || 0), 0),
+    sessions: (profile.history || []).length,
+    games: h.length,
+    solved: singles.length + runs.reduce((a, r) => a + (r.rooms || 0), 0),
+    clean: singles.filter((r) => !r.mistakes && !r.hints).length + runs.reduce((a, r) => a + (r.cleanRooms || 0), 0),
+    teamSolves: singles.filter((r) => r.mode === "sc-room").length,
+    runs: runs.length,
+    runsWon: runs.filter((r) => r.won).length,
+    bestDepth: runs.reduce((a, r) => Math.max(a, r.depth || 0), 0),
+    fastest: times.length ? Math.min(...times.map((r) => r.ms)) : 0,
+    oldGames: (profile.history || []).filter((r) => r && !isClues(r)).length,
     longestStreak: profile.longestStreak || 0,
-    bestRunStreak: h.reduce((a, r) => Math.max(a, r.maxStreak || 0), 0),
-    bestBrain: profile.bestBrain || 0,
     bestScore: profile.bestScore || 0,
-    duels: (profile.duels || []).length,
-    // Only the eight core rules count: boss rules are Drift Run extras and must
-    // not quietly complete "encounter all eight".
-    rulesSeen: Object.keys(profile.ruleStats || {}).filter((id) => CORE_IDS.has(id)).length,
-    totalTrials: h.reduce((a, r) => a + (r.trials || 0), 0),
-    totalCorrect: h.reduce((a, r) => a + (r.correct || 0), 0),
     xp: profile.xp || 0,
   };
 }
@@ -203,7 +184,13 @@ export function iconFor(flatId) {
   return a ? a.icon : "spark";
 }
 
-/** XP is just score earned, so the ladder tracks real play. */
+/**
+ * XP is just score earned, so the ladder tracks real play. Old hidden-rule
+ * games keep the formula they were earned under; every field is guarded, so a
+ * record of either shape can never turn the total into NaN.
+ */
 export function xpFor(result) {
-  return Math.round(result.score + result.adaptations * 40 + result.correct * 5);
+  if (!result) return 0;
+  if (result.game === "clues") return Math.round(Number(result.score) || 0);
+  return Math.round((Number(result.score) || 0) + (Number(result.adaptations) || 0) * 40 + (Number(result.correct) || 0) * 5);
 }

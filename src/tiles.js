@@ -54,7 +54,7 @@ export function tileSvg(tile, { size = 96 } = {}) {
   svg.appendChild(el("path", { d, class: `tile-shape tile-${color}` }));
 
   const box = PIP_BOX[tile.shape] || PIP_BOX.circle;
-  const pips = PIPS[tile.count] || PIPS[1];
+  const pips = tile.count === 0 ? [] : PIPS[tile.count] || PIPS[1];
   // Smaller dots where they would crowd, so every count stays easy to read.
   const r = (tile.count >= 5 ? 5 : tile.count >= 3 ? 5.6 : 6.6) * (tile.shape === "triangle" ? 0.84 : 1);
   for (const [ux, uy] of pips) {
@@ -63,6 +63,29 @@ export function tileSvg(tile, { size = 96 } = {}) {
       cy: (box.y + uy * box.h).toFixed(2),
       r, class: "tile-pip",
     }));
+  }
+  return svg;
+}
+
+/**
+ * One feature on its own, for grid headers and clue chips: a shape outline in
+ * gold, a colour as a glowing gem, or a dot count as dice pips.
+ */
+export function glyphSvg(catId, value, { size = 28 } = {}) {
+  const svg = el("svg", { viewBox: "0 0 100 100", width: size, height: size, class: "glyph", "aria-hidden": "true" });
+  if (catId === "shape") {
+    svg.setAttribute("class", "glyph tile-svg rune-gold");
+    svg.appendChild(el("path", { d: SHAPE_PATH[value] || SHAPE_PATH.circle, class: "tile-shape" }));
+  } else if (catId === "colour") {
+    svg.setAttribute("class", `glyph tile-svg rune-${value}`);
+    svg.appendChild(el("path", { d: "M50 10 84 34 72 84H28L16 34z", class: "tile-shape gem" }));
+  } else {
+    svg.setAttribute("class", "glyph tile-svg rune-gold");
+    svg.appendChild(el("rect", { x: 8, y: 8, width: 84, height: 84, rx: 18, class: "tile-shape faint" }));
+    const r = value >= 5 ? 8 : value >= 3 ? 9 : 10.5;
+    for (const [ux, uy] of PIPS[value] || PIPS[1]) {
+      svg.appendChild(el("circle", { cx: (12 + ux * 76).toFixed(1), cy: (12 + uy * 76).toFixed(1), r, class: "tile-pip" }));
+    }
   }
   return svg;
 }

@@ -1,7 +1,7 @@
 {
   "name": "Ruledrift",
   "short_name": "Ruledrift",
-  "description": "A brain game where the rule is never told to you, and silently changes once you learn it.",
+  "description": "Split Clues: who holds which rune? A logic grid puzzle with exactly one answer that pure logic reaches.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,42 +1,48 @@
-// Drift Run - a short roguelite descent.
+// Drift Run - a short roguelite descent through Split Clues puzzles.
 //
 // A run is a seeded map of three acts. Each act is three steps of "left or
-// right" (an ordinary chamber, a faster elite chamber, or a campfire) and then
-// a boss whose rules need two attributes at once. Hearts carry across the whole
-// run; perks are picked after elites, bosses and at campfires.
+// right" (an ordinary chamber, a timed elite chamber, or a campfire) and then
+// a boss: the biggest grid of the act. Hearts carry across the whole run and a
+// wrong check costs one; perks are picked after elites, bosses and at
+// campfires.
 //
-// Pure logic, like engine.js: no DOM, no timers. Every room is its own Game,
+// Pure logic, like clues.js: no DOM, no timers. Every room is its own puzzle,
 // seeded by the run seed plus the room's id, so the choice of path can never
 // change what any other room deals you - and the same seed is the same run for
-// everyone, which is what makes the Daily Run fair.
+// everyone, which is what makes the Daily Run fair. Time is passed in by the
+// caller, so tests can play a run with a fake clock.
 
-import { Game, buildResult } from "./engine.js";
 import { makeRng, hashSeed, dailySeedCode } from "./rng.js";
-import { rulesUpToTier, ruleFamilies } from "./rules.js";
+import { generatePuzzle, PuzzlePlay, PRESETS, scorePuzzle } from "./clues.js";
 
 export const STEPS_PER_ACT = 3;
 export const START_HEARTS = 3;
 export const MAX_HEARTS = 5;
+export const START_HINTS = 1;
 
+// Which puzzle each kind of room deals, act by act.
 export const ACTS = [
-  { name: "The Shallows", tier: 1, timeMs: Infinity, boss: ["BOSS_DOUBLE_LONER"] },
-  { name: "The Undertow", tier: 2, timeMs: 15000, boss: ["BOSS_RICH_TWIN", "BOSS_DOUBLE_LONER"] },
-  { name: "The Deep", tier: 3, timeMs: 10000, boss: ["BOSS_HUMBLE_LONER", "BOSS_RICH_TWIN", "BOSS_DOUBLE_LONER"] },
+  { name: "The Shallows", room: "easy", elite: "easy4", boss: "medium" },
+  { name: "The Undertow", room: "easy4", elite: "medium", boss: "hard" },
+  { name: "The Deep", room: "medium", elite: "hard", boss: "expert" },
 ];
 
+// Elite clocks, by puzzle size.
+export const ELITE_MS = { easy: 75000, easy4: 150000, medium: 240000, hard: 360000, expert: 540000 };
+
 export const NODE_TYPES = {
-  room: { label: "Chamber", blurb: "Four right answers to pass.", goal: 4, runMin: 3, runMax: 5, bonus: 150 },
-  elite: { label: "Elite", blurb: "The rule turns every two or three. A perk if you pass.", goal: 5, runMin: 2, runMax: 3, bonus: 300, timeScale: 0.75 },
+  room: { label: "Chamber", blurb: "A puzzle. Solve it to go on.", bonus: 150 },
+  elite: { label: "Elite", blurb: "A bigger puzzle against the clock. A perk if you pass.", bonus: 300 },
   rest: { label: "Campfire", blurb: "Rest and choose a perk.", bonus: 0 },
-  boss: { label: "Boss", blurb: "Rules that need two things at once.", goal: 6, runMin: 3, runMax: 4, bonus: 600 },
+  boss: { label: "Boss", blurb: "The biggest grid of the act.", bonus: 600 },
 };
 
 export const PERKS = {
   heart: { label: "Extra heart", blurb: "One more heart, and it starts full." },
   mend: { label: "Mend", blurb: "Restore two lost hearts." },
-  slow: { label: "Slow clock", blurb: "Every clock in this run runs half as fast again." },
-  peek: { label: "Peek", blurb: "Once, see what the secret looks at - dots, colour or shape." },
-  shield: { label: "Shield", blurb: "Forgives one mistake made by sticking to the old rule." },
+  slow: { label: "Slow clock", blurb: "Elite clocks give you half as long again." },
+  lantern: { label: "Lantern", blurb: "Two more hints for this run." },
+  shield: { label: "Shield", blurb: "Forgives one wrong check." },
   hoard: { label: "Ember hoard", blurb: "Bank 400 points for every act you have reached." },
 };
 
@@ -52,8 +58,14 @@ export function isDailyRunSeed(seed) {
 /** Today's finished Daily Run, read from history (so it survives any merge). */
 export function findDailyRun(history, date = new Date()) {
   const seed = dailyRunSeed(date);
-  const hits = (history || []).filter((r) => r && r.mode === "run" && r.seed === seed);
+  const hits = (history || []).filter((r) => r && r.mode === "sc-run" && r.seed === seed);
   return hits.length ? hits[hits.length - 1] : null;
+}
+
+/** The puzzle size a node deals. */
+export function presetFor(node) {
+  if (node.type === "rest") return null;
+  return ACTS[node.act][node.type];
 }
 
 /**
@@ -87,21 +99,29 @@ export class DriftRun {
   constructor({ seed, daily = false }) {
     this.seed = seed;
     this.daily = daily;
-    this.mode = "run";
+    this.mode = "sc-run";
     this.map = buildRunMap(seed);
     this.act = 0;
     this.step = 0;
     this.hearts = START_HEARTS;
     this.maxHearts = START_HEARTS;
-    this.perks = { slow: false, peek: 0, shield: 0 };
+    this.hints = START_HINTS;
+    this.shields = 0;
+    this.slow = false;
     this.taken = [];
-    this.peeksUsed = 0;
     this.score = 0;
     this.cleared = 0;
+    this.rooms = 0;
+    this.cleanRooms = 0;
+    this.mistakes = 0;
+    this.hintsUsed = 0;
+    this.ms = 0;
     this.path = [];
-    this.games = [];
     this.node = null;
-    this.game = null;
+    this.play = null;
+    this.timeLimitMs = Infinity;
+    this.timedOut = false;
+    this.roomStart = 0;
     this.perkOffer = null;
     this.lastBonus = 0;
     this.bossesBeaten = 0;
@@ -112,7 +132,6 @@ export class DriftRun {
 
   get length() { return this.map.length; }
   get depth() { return this.cleared; }
-  get trial() { return this.game ? this.game.trial : null; }
 
   /** The nodes you can step onto right now. */
   options() {
@@ -121,7 +140,7 @@ export class DriftRun {
     return this.step < STEPS_PER_ACT ? a.steps[this.step] : [a.boss];
   }
 
-  enter(nodeId) {
+  enter(nodeId, now = 0) {
     const node = this.options().find((n) => n.id === nodeId);
     if (!node) return null;
     this.node = node;
@@ -131,72 +150,78 @@ export class DriftRun {
       this.perkOffer = this._offer(node, true);
       return node;
     }
-    const act = ACTS[node.act];
-    const kind = NODE_TYPES[node.type];
-    const base = rulesUpToTier(act.tier).map((r) => r.id);
-    const bossIds = node.type === "boss" ? act.boss : null;
-    const raw = act.timeMs * (kind.timeScale || 1) * (this.perks.slow ? 1.5 : 1);
-    this.game = new Game({
-      seed: `${this.seed}:${node.id}`,
-      mode: "run",
-      pool: bossIds ? [...base, ...bossIds] : base,
-      runMin: kind.runMin,
-      runMax: kind.runMax,
-      lives: this.hearts,
-      maxLives: this.maxHearts,
-      timeLimitMs: isFinite(raw) ? Math.round(raw) : Infinity,
-      shields: this.perks.shield,
-      goal: kind.goal,
-      freeFirst: true,
-      firstRule: bossIds ? bossIds[0] : null,
-      alternate: bossIds,
-    });
+    const preset = presetFor(node);
+    this.play = new PuzzlePlay(generatePuzzle(`${this.seed}:${node.id}`, preset), { shields: this.shields });
+    this.timeLimitMs = node.type === "elite" ? Math.round(ELITE_MS[preset] * (this.slow ? 1.5 : 1)) : Infinity;
+    this.timedOut = false;
+    this.roomStart = now;
     this.phase = "room";
     return node;
   }
 
-  /** Correct answers still needed to clear the current room. */
-  get roomLeft() {
-    return this.game ? Math.max(0, this.game.goal - this.game.correctCount) : 0;
+  /** Is the room's clock still running? */
+  get timed() {
+    return this.phase === "room" && isFinite(this.timeLimitMs) && !this.timedOut;
   }
 
-  answer(index, rtMs) {
-    if (this.phase !== "room" || !this.game) return null;
-    const g = this.game;
-    const before = g.score;
-    const rec = g.answer(index, rtMs);
+  /** Tap a cell in the current room. A wrong check costs a heart unless a shield takes it. */
+  tap(key, now = 0) {
+    if (this.phase !== "room" || !this.play) return null;
+    const rec = this.play.tap(key);
     if (!rec) return null;
-    this.score += g.score - before;
-    this.hearts = g.lives;
-    this.perks.shield = g.shields;
-    if (g.over) this._finishNode();
+    this.shields = this.play.shields;
+    if (rec.wrong && !rec.shielded) this.hearts--;
+    this._settle(now);
     return rec;
   }
 
-  timeout() {
-    return this.game ? this.answer(-1, this.game.timeLimitMs) : null;
+  /** Spend a hint, if there is one to spend. */
+  hint(now = 0) {
+    if (this.phase !== "room" || !this.play || this.hints <= 0) return null;
+    const h = this.play.hint();
+    if (!h) return null;
+    this.hints--;
+    this.hintsUsed++;
+    this._settle(now);
+    return h;
   }
 
-  /** Spend a peek: which attributes the current secret looks at. Never the rule. */
-  usePeek() {
-    if (this.phase !== "room" || !this.game || this.perks.peek <= 0) return null;
-    this.perks.peek--;
-    this.peeksUsed++;
-    return ruleFamilies(this.game.currentRule);
+  /** The elite clock ran out: one heart, and the room goes on without a clock. */
+  timeout(now = 0) {
+    if (!this.timed) return false;
+    this.timedOut = true;
+    this.hearts--;
+    this._settle(now);
+    return true;
   }
 
-  _finishNode() {
-    const g = this.game;
-    this.games.push(g);
+  _settle(now) {
+    if (this.hearts <= 0) {
+      this.hearts = 0;
+      this._finishNode(now, false);
+    } else if (this.play && this.play.solved) {
+      this._finishNode(now, true);
+    }
+  }
+
+  _finishNode(now, cleared) {
+    const p = this.play;
+    const ms = Math.max(0, now - this.roomStart);
+    this.ms += ms;
+    this.mistakes += p.mistakes;
     this.lastBonus = 0;
-    if (!g.cleared) {
+    if (!cleared) {
       this.over = true;
       this.phase = "over";
       return;
     }
     this.cleared++;
+    this.rooms++;
+    if (!p.mistakes && !p.hintsUsed) this.cleanRooms++;
     const node = this.node;
-    this.lastBonus = NODE_TYPES[node.type].bonus * (node.act + 1);
+    const elitePaid = node.type !== "elite" || !this.timedOut;
+    this.lastBonus = (elitePaid ? NODE_TYPES[node.type].bonus : Math.round(NODE_TYPES[node.type].bonus / 2)) * (node.act + 1)
+      + scorePuzzle(p.puzzle.preset, ms, p.mistakes, p.hintsUsed);
     this.score += this.lastBonus;
     if (node.type === "boss") {
       this.bossesBeaten++;
@@ -223,9 +248,9 @@ export class DriftRun {
   _offer(node, rest) {
     const rng = makeRng(hashSeed(`${this.seed}:${node.id}:perk`));
     const hurt = this.hearts < this.maxHearts;
-    const pool = ["peek", "shield", "hoard"];
+    const pool = ["lantern", "shield", "hoard"];
     if (this.maxHearts < MAX_HEARTS) pool.push("heart");
-    if (!this.perks.slow) pool.push("slow");
+    if (!this.slow) pool.push("slow");
     if (hurt) pool.push("mend");
     const picks = rng.shuffle(pool).slice(0, 3);
     // A campfire always lets a hurt player heal.
@@ -241,11 +266,11 @@ export class DriftRun {
     } else if (id === "mend") {
       this.hearts = Math.min(this.maxHearts, this.hearts + 2);
     } else if (id === "slow") {
-      this.perks.slow = true;
-    } else if (id === "peek") {
-      this.perks.peek++;
+      this.slow = true;
+    } else if (id === "lantern") {
+      this.hints += 2;
     } else if (id === "shield") {
-      this.perks.shield++;
+      this.shields++;
     } else if (id === "hoard") {
       this.score += 400 * (this.act + 1);
     }
@@ -258,7 +283,9 @@ export class DriftRun {
   _advance() {
     this.perkOffer = null;
     this.node = null;
-    this.game = null;
+    this.play = null;
+    this.timeLimitMs = Infinity;
+    this.timedOut = false;
     if (this.step < STEPS_PER_ACT) this.step++;
     else {
       this.act++;
@@ -267,32 +294,31 @@ export class DriftRun {
     this.phase = "map";
   }
 
-  /** One history record for the whole run, in the same shape as every other mode. */
-  result() {
-    const trials = [];
-    for (const g of this.games) for (const t of g.trials) trials.push({ ...t, n: trials.length + 1 });
-    const pseudo = {
-      trials,
-      seed: this.seed,
-      mode: "run",
-      score: this.score,
-      level: this.cleared,
-      maxStreak: this.games.reduce((m, g) => Math.max(m, g.maxStreak), 0),
-      ruleChanges: this.games.reduce((s, g) => s + g.ruleChanges, 0),
-    };
-    const r = buildResult(pseudo);
+  /** One history record for the whole run. */
+  result(playedAt = Date.now()) {
     return {
-      ...r,
+      game: "clues",
+      mode: "sc-run",
+      seed: this.seed,
+      score: this.score,
       depth: this.cleared,
       length: this.map.length,
       actReached: Math.min(ACTS.length, this.act + 1),
       won: this.won,
       bossesBeaten: this.bossesBeaten,
+      rooms: this.rooms,
+      cleanRooms: this.cleanRooms,
+      mistakes: this.mistakes,
+      hints: this.hintsUsed,
+      ms: Math.round(this.ms),
       perks: [...this.taken],
-      peeksUsed: this.peeksUsed,
       daily: this.daily,
       path: [...this.path],
       hearts: this.hearts,
+      solved: this.won,
+      playedAt,
     };
   }
 }
+
+export { PRESETS };

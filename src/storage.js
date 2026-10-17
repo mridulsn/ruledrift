@@ -1,6 +1,11 @@
 // Local persistence. Everything lives in localStorage - the game is fully
-// playable with the network switched off, and no result ever leaves the device
-// unless the player explicitly copies a share code.
+// playable with the network switched off. A signed-in player's profile is also
+// backed up to their account (cloud.js), merged, never overwritten.
+//
+// History holds two shapes of record: the retired hidden-rule games (mode
+// "quick", "daily", "run", ...) and Split Clues (game "clues", mode "sc-*").
+// Both are kept forever and merged the same way; nothing here may assume
+// a field that only one shape has.
 
 import { unlockedSet, xpFor } from "./achievements.js";
 
@@ -101,19 +106,20 @@ export function recordResult(profile, result) {
 
   profile.history.push(result);
   if (profile.history.length > 400) profile.history = profile.history.slice(-400);
-  profile.bestScore = Math.max(profile.bestScore, result.score);
-  profile.bestBrain = Math.max(profile.bestBrain, result.brainScore);
+  profile.bestScore = Math.max(profile.bestScore || 0, Number(result.score) || 0);
+  profile.bestBrain = Math.max(profile.bestBrain || 0, Number(result.brainScore) || 0);
 
   for (const [id, v] of Object.entries(result.byRule || {})) {
     const s = (profile.ruleStats[id] = profile.ruleStats[id] || { seen: 0, correct: 0 });
-    s.seen += v.seen;
-    s.correct += v.correct;
+    s.seen += v.seen || 0;
+    s.correct += v.correct || 0;
   }
 
   const gained = xpFor(result);
   profile.xp = beforeXp + gained;
 
-  if (result.mode === "daily") {
+  // Both the old Daily and the Split Clues Daily keep the same day streak.
+  if (result.mode === "daily" || result.mode === "sc-daily") {
     const today = dayKey(new Date(result.playedAt));
     if (!profile.dailyResults[today]) {
       profile.dailyResults[today] = result;

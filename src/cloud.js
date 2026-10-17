@@ -545,3 +545,139 @@ function clearQueue() {
     localStorage.removeItem(QUEUE_KEY);
   } catch {}
 }
+
+// ---------------------------------------------------------------------------
+// rooms: play with friends. One Firestore document per room, rooms/{CODE}.
+// Every signed-in player can read a room (the code is the invitation); only
+// the players listed in it can change it, and a join may add only yourself.
+// See firestore.rules in the sign-in server's repository.
+//
+// Marks are written one field at a time (updateMask "grid.g0r1c2"), so two
+// friends marking at the same moment never overwrite each other.
+// ---------------------------------------------------------------------------
+
+/** Pure: a plain value as a Firestore REST value. */
+export function toFs(v) {
+  if (v === null || v === undefined) return { nullValue: null };
+  if (v instanceof Date) return { timestampValue: v.toISOString() };
+  if (typeof v === "boolean") return { booleanValue: v };
+  if (typeof v === "number") return Number.isInteger(v) ? { integerValue: String(v) } : { doubleValue: v };
+  if (typeof v === "string") return { stringValue: v };
+  if (Array.isArray(v)) return { arrayValue: v.length ? { values: v.map(toFs) } : {} };
+  const fields = {};
+  for (const [k, x] of Object.entries(v)) if (x !== undefined) fields[k] = toFs(x);
+  return { mapValue: Object.keys(fields).length ? { fields } : {} };
+}
+
+/** Pure: a Firestore REST value as a plain value. Timestamps become epoch ms. */
+export function fromFs(v) {
+  if (!v || typeof v !== "object") return null;
+  if ("stringValue" in v) return v.stringValue;
+  if ("integerValue" in v) return Number(v.integerValue);
+  if ("doubleValue" in v) return Number(v.doubleValue);
+  if ("booleanValue" in v) return v.booleanValue;
+  if ("timestampValue" in v) return Date.parse(v.timestampValue) || 0;
+  if ("nullValue" in v) return null;
+  if ("arrayValue" in v) return (v.arrayValue.values || []).map(fromFs);
+  if ("mapValue" in v) {
+    const out = {};
+    for (const [k, x] of Object.entries(v.mapValue.fields || {})) out[k] = fromFs(x);
+    return out;
+  }
+  return null;
+}
+
+/** Pure: quote a dotted field path's segments where Firestore needs it. */
+export function fieldPath(path) {
+  return String(path).split(".").map((seg) =>
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(seg) ? seg : "`" + seg.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`").join(".");
+}
+
+/**
+ * Pure: turn {"grid.g0r1c2": 2, "status": "playing", "grid.g0r0c0": undefined}
+ * into a PATCH body and its update mask. A path listed with no value is deleted.
+ */
+export function patchBody(updates) {
+  const fields = {};
+  const mask = [];
+  for (const [path, val] of Object.entries(updates)) {
+    mask.push(fieldPath(path));
+    if (val === undefined) continue;
+    const segs = path.split(".");
+    let node = fields;
+    for (let i = 0; i < segs.length - 1; i++) {
+      const s = segs[i];
+      if (!node[s] || !node[s].mapValue) node[s] = { mapValue: { fields: {} } };
+      if (!node[s].mapValue.fields) node[s].mapValue.fields = {};
+      node = node[s].mapValue.fields;
+    }
+    node[segs[segs.length - 1]] = toFs(val);
+  }
+  return { fields, mask };
+}
+
+/**
+ * Pure: read a room fetch. As with pull(), "no such room" and "could not
+ * read" must never look the same: one means a mistyped code, the other a
+ * dropped connection.
+ * @returns {{ok: boolean, status: number, room: object|null}}
+ */
+export function readRoomResponse(status, doc) {
+  if (status === 404) return { ok: true, status, room: null };
+  if (status !== 200 || !doc || !doc.fields) return { ok: false, status, room: null };
+  const room = fromFs({ mapValue: { fields: doc.fields } });
+  room.code = String(doc.name || "").split("/").pop();
+  return { ok: true, status, room };
+}
+
+async function roomsBase() {
+  const ep = await endpoints();
+  return `${ep.firestore}/v1/projects/${ep.projectId}/databases/(default)/documents/rooms`;
+}
+
+async function roomFetch(path, init = {}) {
+  const token = await validToken();
+  if (!token || !currentUser()) return { status: 0, json: null };
+  try {
+    const res = await fetch(`${await roomsBase()}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", ...(init.headers || {}) },
+    });
+    let json = null;
+    try { json = await res.json(); } catch {}
+    return { status: res.status, json };
+  } catch {
+    return { status: 0, json: null };
+  }
+}
+
+/** @returns {Promise<{ok, status, room}>} */
+export async function roomGet(code) {
+  const r = await roomFetch(`/${encodeURIComponent(code)}`);
+  return readRoomResponse(r.status, r.json);
+}
+
+/** Create a room. Fails (409) if the code is already taken, so it never overwrites one. */
+export async function roomCreate(code, data) {
+  const r = await roomFetch(`?documentId=${encodeURIComponent(code)}`, {
+    method: "POST",
+    body: JSON.stringify({ fields: toFs(data).mapValue.fields || {} }),
+  });
+  return { ok: r.status === 200, status: r.status };
+}
+
+/** Change only the listed fields of an existing room. */
+export async function roomPatch(code, updates) {
+  const { fields, mask } = patchBody(updates);
+  const q = mask.map((m) => "updateMask.fieldPaths=" + encodeURIComponent(m)).join("&");
+  const r = await roomFetch(`/${encodeURIComponent(code)}?${q}&currentDocument.exists=true`, {
+    method: "PATCH",
+    body: JSON.stringify({ fields }),
+  });
+  return { ok: r.status === 200, status: r.status };
+}
+
+export async function roomDelete(code) {
+  const r = await roomFetch(`/${encodeURIComponent(code)}`, { method: "DELETE" });
+  return { ok: r.status === 200, status: r.status };
+}
