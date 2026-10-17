@@ -604,7 +604,7 @@ function screenPuzzle(mode, elapsed = 0) {
       clueWrap),
     board.el,
     feed,
-    h("p", { class: "tiny", style: "text-align:center;margin:0" }, "Tap once for X (not this one), twice for a check."));
+    h("p", { class: "small muted", style: "text-align:center;margin:0" }, "Tap once for X (not this one), twice for a check."));
   render(wrap, { wide: true });
 
   function paintHud() {
@@ -716,7 +716,7 @@ function screenSolved(result, { replay = false, newlyUnlocked = [], xpGained = 0
         if (navigator.share) { try { await navigator.share({ text: shareText }); return; } catch {} }
         toast((await copyText(shareText)) ? "Result copied" : "Copy failed");
       } }, icon("share", { size: 18 }), "Share result"),
-      h("p", { class: "tiny", style: "margin-top:10px" }, "No spoilers: it says how you did, never who holds what.")),
+      h("p", { class: "small muted", style: "margin:10px 0 0" }, "No spoilers: it says how you did, never who holds what.")),
     h("div", { class: "btn-row" },
       h("button", { class: "btn btn-primary", onclick: () => startPuzzle("sc-practice", randomSeedCode(), result.preset) },
         icon("dice", { size: 18 }), `New ${P.label} puzzle`),
@@ -844,7 +844,7 @@ function screenTutorial() {
     const v = play.grid[key] || 0;
     if (v === step.value) {
       sfx.correct(i + 2);
-      juice.celebrate(board.cells[key], v === 2 ? "CHECK" : "X", i === TUT_STEPS.length - 1);
+      juice.celebrate(board.cells[key], "", i === TUT_STEPS.length - 1);
       banner.className = "tut-banner reveal";
       banner.replaceChildren(h("b", {}, "Yes. "), document.createTextNode(step.done));
       board.cells[key].classList.remove("target");
@@ -971,7 +971,7 @@ function screenProfile() {
         stat(s.runsWon ? `${s.runsWon} won` : s.bestDepth ? `${s.bestDepth}/12` : "\u2014", "Drift Run"),
         stat(s.fastest ? clock(s.fastest) : "\u2014", "Fastest")),
       s.oldGames
-        ? h("p", { class: "tiny", style: "margin:12px 0 0" },
+        ? h("p", { class: "small muted", style: "margin:12px 0 0" },
             `${s.oldGames} game${s.oldGames === 1 ? "" : "s"} from the older hidden-rule modes ${s.oldGames === 1 ? "is" : "are"} kept in your history and still count towards your XP.`)
         : null),
 
@@ -1200,13 +1200,13 @@ function screenFriends(prefill = "") {
         sizeNote.textContent = presetBlurb(id);
       },
     }, PRESETS[id].label)));
-  const sizeNote = h("div", { class: "tiny", style: "margin-top:8px" }, presetBlurb(preset));
+  const sizeNote = h("div", { class: "small muted", style: "margin-top:8px" }, presetBlurb(preset));
   const codeInput = h("input", {
     type: "text", class: "codein", maxlength: "6", placeholder: "ABC123", value: prefill,
     autocapitalize: "characters", autocomplete: "off", spellcheck: "false", "aria-label": "Room code",
   });
   codeInput.addEventListener("input", () => { codeInput.value = rooms.normalizeRoomCode(codeInput.value); });
-  const status = h("div", { class: "tiny", style: "min-height:16px;margin-top:8px" });
+  const status = h("div", { class: "small muted", style: "min-height:18px;margin-top:8px" });
 
   const createBtn = h("button", { class: "btn btn-primary", onclick: async () => {
     createBtn.disabled = true;
@@ -1381,8 +1381,8 @@ function screenRoom(code) {
             toast((await copyText(text)) ? "Invite copied" : "Copy failed");
           } }, icon("share", { size: 16 }), "Invite"))),
       h("div", { class: "card" },
-        h("div", { class: "between" }, h("h3", {}, `Players (${n}/6)`),
-          h("span", { class: "tiny" }, `${PRESETS[lastRoom.preset].label} \u00b7 ${presetBlurb(lastRoom.preset)}`)),
+        h("h3", {}, `Players (${n}/6)`),
+        h("div", { class: "small muted", style: "margin-top:2px" }, `${PRESETS[lastRoom.preset].label} puzzle \u00b7 ${presetBlurb(lastRoom.preset)}`),
         playerList(),
         isHost()
           ? h("div", { style: "margin-top:14px" },
@@ -1392,7 +1392,7 @@ function screenRoom(code) {
                 if (!res.ok) { e.currentTarget.disabled = false; toast("Could not start - check your connection."); }
                 else poll();
               } }, n > 1 ? `Start with ${n} players` : "Start on my own"),
-              h("p", { class: "tiny", style: "margin-top:8px" },
+              h("p", { class: "small muted", style: "margin:10px 0 0" },
                 n > 1 ? "The clues are dealt out when you start. Anyone who joins later can still mark and read shared clues."
                   : "Waiting for friends. On your own you see every clue."))
           : h("p", { class: "small muted", style: "margin-top:14px" }, `Waiting for ${lastRoom.hostName || "the host"} to start...`)));
@@ -1420,7 +1420,7 @@ function screenRoom(code) {
         sharedWrap),
       board.el,
       feed,
-      h("p", { class: "tiny", style: "text-align:center;margin:0" }, "One grid for the whole team. Tap once for X, twice for a check."));
+      h("p", { class: "small muted", style: "text-align:center;margin:0" }, "One grid for the whole team. Tap once for X, twice for a check."));
     refreshPlaying();
   }
 

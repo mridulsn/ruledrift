@@ -1025,3 +1025,5 @@ input.codein {
 @media (prefers-reduced-motion: reduce) {
   .cell[data-v="2"], .cell.wrong, .cell.hinted, .cell.target { animation: none; }
 }
+
+.answer + .players { justify-content: center; }
